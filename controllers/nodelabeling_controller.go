@@ -28,6 +28,7 @@ import (
 	resourcev1 "k8s.io/api/resource/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -265,27 +266,20 @@ func (nlc *nodeLabelingController) labelGPUNodes(ctx context.Context) (gpuNodeLa
 		return result, fmt.Errorf("unable to list nodes: %w", err)
 	}
 
-	for _, node := range nodeList.Items {
-		original := node.DeepCopy()
-		labels := node.GetLabels()
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
 		gpuDiscoveryStateChanged := false
-		stateLabelsModified := false
-
-		if nlc.reconcileCommonGPULabel(labels, node.Name) {
+		modified, err := patchNodeOnConflict(ctx, nlc.client, node, func(node *corev1.Node) bool {
+			labels := node.GetLabels()
+			gpuDiscoveryStateChanged = nlc.reconcileCommonGPULabel(labels, node.Name)
+			stateLabelsModified := nlc.updateGPUStateLabels(ctx, labels, node.Name)
 			node.SetLabels(labels)
-			gpuDiscoveryStateChanged = true
+			return gpuDiscoveryStateChanged || stateLabelsModified
+		})
+		if err != nil {
+			return result, fmt.Errorf("unable to label node %s: %w", node.Name, err)
 		}
-
-		if nlc.updateGPUStateLabels(ctx, labels, node.Name) {
-			node.SetLabels(labels)
-			stateLabelsModified = true
-		}
-
-		modified := gpuDiscoveryStateChanged || stateLabelsModified
 		if modified {
-			if err := nlc.client.Patch(ctx, &node, client.MergeFrom(original)); err != nil {
-				return result, fmt.Errorf("unable to label node %s: %w", node.Name, err)
-			}
 			result.totalPatchedNodeCount++
 			if gpuDiscoveryStateChanged {
 				result.gpuDiscoveryStateChangedNodeCount++
@@ -293,6 +287,32 @@ func (nlc *nodeLabelingController) labelGPUNodes(ctx context.Context) (gpuNodeLa
 		}
 	}
 	return result, nil
+}
+
+// patchNodeOnConflict applies mutate to node and patches the result with the read
+// resourceVersion. Other writers change the same label keys, so a patch built from a
+// stale read must fail instead of overwriting their values; on conflict the node is
+// re-read and mutate runs again. It reports whether the final attempt changed the node.
+func patchNodeOnConflict(ctx context.Context, c client.Client, node *corev1.Node, mutate func(*corev1.Node) bool) (bool, error) {
+	modified := false
+	reread := false
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if reread {
+			current := &corev1.Node{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(node), current); err != nil {
+				return err
+			}
+			*node = *current
+		}
+		reread = true
+		original := node.DeepCopy()
+		modified = mutate(node)
+		if !modified {
+			return nil
+		}
+		return c.Patch(ctx, node, client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+	})
+	return modified, err
 }
 
 // reconcileCommonGPULabel keeps nvidia.com/gpu.present in sync with NFD GPU PCI labels.
@@ -605,25 +625,23 @@ func (nlc *nodeLabelingController) labelNodesWithOrphanedDriverPods(ctx context.
 			nlc.logger.Error(err, "failed to get node for orphaned driver pod", "pod", pod.Name, "node", pod.Spec.NodeName)
 			continue
 		}
-		if !nodeOwnedByNVIDIADriver(node, nvidiaDrivers.Items) {
-			continue
-		}
-
-		upgradeStateLabel := upgrade.GetUpgradeStateLabelKey()
-		upgradeState := upgrade.UpgradeStateUnknown
-		if node.Labels != nil {
-			upgradeState = node.Labels[upgradeStateLabel]
-		}
-		if !isDriverUpgradeRequestAllowed(upgradeState) {
-			continue
-		}
-
-		original := node.DeepCopy()
-		if node.Labels == nil {
-			node.Labels = map[string]string{}
-		}
-		node.Labels[upgradeStateLabel] = upgrade.UpgradeStateUpgradeRequired
-		if err := nlc.client.Patch(ctx, node, client.MergeFrom(original)); err != nil {
+		// The upgrade state machine advances the same label concurrently, so the
+		// eligibility check must be repeated against every re-read of the node.
+		_, err := patchNodeOnConflict(ctx, nlc.client, node, func(node *corev1.Node) bool {
+			if !nodeOwnedByNVIDIADriver(node, nvidiaDrivers.Items) {
+				return false
+			}
+			upgradeStateLabel := upgrade.GetUpgradeStateLabelKey()
+			if !isDriverUpgradeRequestAllowed(node.Labels[upgradeStateLabel]) {
+				return false
+			}
+			if node.Labels == nil {
+				node.Labels = map[string]string{}
+			}
+			node.Labels[upgradeStateLabel] = upgrade.UpgradeStateUpgradeRequired
+			return true
+		})
+		if err != nil {
 			return fmt.Errorf("failed to label node %q for orphaned driver pod %q: %w", node.Name, pod.Name, err)
 		}
 	}
