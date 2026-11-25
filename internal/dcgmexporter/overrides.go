@@ -59,8 +59,12 @@ func ValidateUserOverrides(args []string, env []gpuv1.EnvVar) error {
 	if err := ValidateConfigFileSelection(args, env); err != nil {
 		return err
 	}
-	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "--a", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-")) {
-		return fmt.Errorf("%s sets metrics listener %q, which conflicts with the Operator Service on port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
+	metricsPort, err := DefaultMetricsPort()
+	if err != nil {
+		return err
+	}
+	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "--a", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-"), metricsPort) {
+		return fmt.Errorf("%s sets metrics listener %q, which does not match the Operator-managed container port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
 	}
 	if value, source, explicit := effectiveStringOption(args, env, metricsCollectorsEnvName, "--collectors", "-collectors", "--f", "-f"); explicit && value == oldMetricsFilePath {
 		return fmt.Errorf("%s selects the former custom metrics path %q; use %q", source, oldMetricsFilePath, CustomMetricsFilePath)
@@ -128,21 +132,21 @@ func effectiveBoolOption(defaultValue bool, args []string, env []gpuv1.EnvVar, e
 	return value
 }
 
-func serviceAddress(address string) bool {
+func serviceAddress(address string, metricsPort int32) bool {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return false
 	}
 	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber != metricsPort {
+	if err != nil || portNumber != int(metricsPort) {
 		return false
 	}
 	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
-func serviceAddressOverride(address string, allowKubernetesExpansion bool) bool {
+func serviceAddressOverride(address string, allowKubernetesExpansion bool, metricsPort int32) bool {
 	if !allowKubernetesExpansion || !kubernetesEnvExpansion.MatchString(address) {
-		return serviceAddress(address)
+		return serviceAddress(address, metricsPort)
 	}
 
 	host, port, err := net.SplitHostPort(address)
@@ -159,5 +163,5 @@ func serviceAddressOverride(address string, allowKubernetesExpansion bool) bool 
 		return true
 	}
 	portNumber, err := strconv.Atoi(port)
-	return err == nil && portNumber == metricsPort
+	return err == nil && portNumber == int(metricsPort)
 }

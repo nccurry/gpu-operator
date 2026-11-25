@@ -1022,6 +1022,18 @@ func setNRIPluginAnnotation(o *metav1.ObjectMeta, cdiConfig *gpuv1.CDIConfigSpec
 }
 
 func TransformDCGMExporterService(obj *corev1.Service, config *gpuv1.ClusterPolicySpec) error {
+	metricsServicePortCount := 0
+	for i := range obj.Spec.Ports {
+		if obj.Spec.Ports[i].Name != "gpu-metrics" {
+			continue
+		}
+		obj.Spec.Ports[i].TargetPort = intstr.FromString(dcgmexporter.MetricsPortName)
+		metricsServicePortCount++
+	}
+	if metricsServicePortCount != 1 {
+		return fmt.Errorf("expected one dcgm-exporter Service port named gpu-metrics, got %d", metricsServicePortCount)
+	}
+
 	serviceConfig := config.DCGMExporter.ServiceSpec
 	if serviceConfig != nil {
 		if len(serviceConfig.Type) > 0 {
@@ -1841,19 +1853,6 @@ func renderClusterPolicyDCGMExporterConfig(config *gpuv1.ClusterPolicySpec, host
 	return data, options, nil
 }
 
-func setDCGMExporterHealthProbes(container *corev1.Container, hostNetwork bool) {
-	for _, probe := range []*corev1.Probe{container.StartupProbe, container.LivenessProbe, container.ReadinessProbe} {
-		if probe == nil || probe.HTTPGet == nil {
-			continue
-		}
-		probe.HTTPGet.Port = intstr.FromString(dcgmexporter.HealthPortName)
-		probe.HTTPGet.Host = ""
-		if hostNetwork {
-			probe.HTTPGet.Host = "127.0.0.1"
-		}
-	}
-}
-
 // TransformDCGMExporter transforms dcgm exporter daemonset with required config as per ClusterPolicy
 func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpec, n ClusterPolicyController) error {
 	exporterConfig, exporterOptions, err := renderClusterPolicyDCGMExporterConfig(config, config.DCGMExporter.IsHostNetworkEnabled())
@@ -1908,11 +1907,8 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 			obj.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirst
 		}
 	}
-	setDCGMExporterHealthProbes(&obj.Spec.Template.Spec.Containers[0], exporterOptions.HostNetwork)
-	for i := range obj.Spec.Template.Spec.Containers[0].Ports {
-		if obj.Spec.Template.Spec.Containers[0].Ports[i].Name == dcgmexporter.HealthPortName {
-			obj.Spec.Template.Spec.Containers[0].Ports[i].ContainerPort = dcgmexporter.HealthPort
-		}
+	if err := dcgmexporter.ApplyDeploymentDefaults(&obj.Spec.Template.Spec.Containers[0], exporterOptions.HostNetwork); err != nil {
+		return err
 	}
 
 	setNRIPluginAnnotation(&obj.Spec.Template.ObjectMeta, &config.CDI, obj.Spec.Template.Spec.Containers[0].Name)

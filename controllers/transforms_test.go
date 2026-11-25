@@ -17,6 +17,7 @@
 package controllers
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -2089,21 +2090,26 @@ func withGeneratedDCGMExporterConfig(t *testing.T, expected, input *appsv1.Daemo
 			}},
 		}},
 	})
+	require.NoError(t, dcgmexporter.ApplyDeploymentDefaults(container, expected.Spec.Template.Spec.HostNetwork))
 	return expected
 }
 
 func TestTransformDCGMExporter410Config(t *testing.T) {
+	metricsPort, err := dcgmexporter.DefaultMetricsPort()
+	require.NoError(t, err)
+	healthPort, err := dcgmexporter.DefaultHealthPort()
+	require.NoError(t, err)
 	container := corev1.Container{
 		Name: "dcgm-exporter",
 		Env:  []corev1.EnvVar{{Name: "CUSTOM_SETTING", Value: "kept"}},
 		Args: []string{"--fail-on-init-error=false"},
 		Ports: []corev1.ContainerPort{
-			{Name: "metrics", ContainerPort: 9400},
+			{Name: dcgmexporter.MetricsPortName, ContainerPort: metricsPort},
 			{Name: dcgmexporter.HealthPortName, ContainerPort: 1},
 		},
-		StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(9400)}}},
-		LivenessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(9400)}}},
-		ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromInt32(9400)}}},
+		StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
+		LivenessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
+		ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
 	}
 	ds := NewDaemonset().WithContainer(container).WithHostPathVolume("pod-gpu-resources", "/var/lib/kubelet/pod-resources", nil)
 	spec := &gpuv1.ClusterPolicySpec{
@@ -2125,7 +2131,7 @@ func TestTransformDCGMExporter410Config(t *testing.T) {
 		},
 	}
 
-	err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+	err = TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
 	require.NoError(t, err)
 
 	main := &ds.Spec.Template.Spec.Containers[0]
@@ -2135,15 +2141,28 @@ func TestTransformDCGMExporter410Config(t *testing.T) {
 	assert.True(t, ds.Spec.Template.Spec.AutomountServiceAccountToken != nil && *ds.Spec.Template.Spec.AutomountServiceAccountToken)
 	assert.True(t, ds.Spec.Template.Spec.HostNetwork)
 	assert.Equal(t, corev1.DNSClusterFirstWithHostNet, ds.Spec.Template.Spec.DNSPolicy)
-	assert.Equal(t, int32(9400), main.Ports[0].ContainerPort)
-	assert.Equal(t, dcgmexporter.HealthPort, main.Ports[1].ContainerPort)
+	assert.Equal(t, metricsPort, main.Ports[0].ContainerPort)
+	assert.Equal(t, healthPort, main.Ports[1].ContainerPort)
+	defaults, err := dcgmexporter.DefaultDeploymentDefaults()
+	require.NoError(t, err)
 	for _, probe := range []*corev1.Probe{main.StartupProbe, main.LivenessProbe, main.ReadinessProbe} {
 		require.NotNil(t, probe.HTTPGet)
 		assert.Equal(t, "127.0.0.1", probe.HTTPGet.Host)
 		assert.Equal(t, dcgmexporter.HealthPortName, probe.HTTPGet.Port.String())
 	}
-	assert.Equal(t, "/healthz", main.StartupProbe.HTTPGet.Path)
-	assert.Equal(t, "/readyz", main.ReadinessProbe.HTTPGet.Path)
+	for _, pair := range []struct {
+		got  *corev1.Probe
+		want *corev1.Probe
+	}{
+		{got: main.StartupProbe, want: defaults.StartupProbe},
+		{got: main.LivenessProbe, want: defaults.LivenessProbe},
+		{got: main.ReadinessProbe, want: defaults.ReadinessProbe},
+	} {
+		want := pair.want.DeepCopy()
+		want.HTTPGet.Host = "127.0.0.1"
+		want.HTTPGet.Port = intstr.FromString(dcgmexporter.HealthPortName)
+		assert.Equal(t, want, pair.got)
+	}
 
 	configVolume := findVolume(t, ds.Spec.Template.Spec.Volumes, dcgmexporter.ConfigVolumeName)
 	require.NotNil(t, configVolume.DownwardAPI)
@@ -2167,7 +2186,7 @@ func TestTransformDCGMExporter410Config(t *testing.T) {
 	assert.NotContains(t, ds.Spec.Template.Annotations, "nvidia.com/dcgm-exporter-config-hash")
 	var rendered map[string]any
 	require.NoError(t, yaml.Unmarshal(configBytes, &rendered))
-	assert.Equal(t, "127.0.0.1:9401", rendered["server"].(map[string]any)["listen_health"])
+	assert.Equal(t, fmt.Sprintf("127.0.0.1:%d", healthPort), rendered["server"].(map[string]any)["listen_health"])
 	assert.Equal(t, "nvidia-dcgm:5555", rendered["sources"].(map[string]any)["dcgm"].(map[string]any)["hostengine"])
 
 	for _, env := range main.Env {
@@ -2176,7 +2195,23 @@ func TestTransformDCGMExporter410Config(t *testing.T) {
 	}
 }
 
+func TestTransformDCGMExporterServiceUsesNamedMetricsTarget(t *testing.T) {
+	service := &corev1.Service{Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{
+		Name:       "gpu-metrics",
+		Port:       9400,
+		TargetPort: intstr.FromInt32(1),
+	}}}}
+
+	require.NoError(t, TransformDCGMExporterService(service, &gpuv1.ClusterPolicySpec{}))
+	require.Len(t, service.Spec.Ports, 1)
+	assert.Equal(t, "gpu-metrics", service.Spec.Ports[0].Name)
+	assert.Equal(t, int32(9400), service.Spec.Ports[0].Port)
+	assert.Equal(t, intstr.FromString(dcgmexporter.MetricsPortName), service.Spec.Ports[0].TargetPort)
+}
+
 func TestTransformDCGMExporter410RejectsUnsafeOverrides(t *testing.T) {
+	metricsPort, err := dcgmexporter.DefaultMetricsPort()
+	require.NoError(t, err)
 	for _, test := range []struct {
 		name string
 		args []string
@@ -2185,7 +2220,7 @@ func TestTransformDCGMExporter410RejectsUnsafeOverrides(t *testing.T) {
 	}{
 		{name: "config file flag", args: []string{"--config-file", "/tmp/custom.yaml"}, want: "selects a separate config file"},
 		{name: "empty config file env", env: []gpuv1.EnvVar{{Name: dcgmexporter.ConfigFileEnvName}}, want: "DCGM_EXPORTER_CONFIG_FILE"},
-		{name: "listener breaks service", args: []string{"--address", "127.0.0.1:9400"}, want: "conflicts with the Operator Service"},
+		{name: "listener breaks service", args: []string{"--address", fmt.Sprintf("127.0.0.1:%d", metricsPort)}, want: "keep a wildcard listener"},
 		{name: "old custom CSV path", env: []gpuv1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/etc/dcgm-exporter/dcgm-metrics.csv"}}, want: "former custom metrics path"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

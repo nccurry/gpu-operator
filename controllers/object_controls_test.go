@@ -43,6 +43,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1981,17 +1982,24 @@ func TestDCGMExporter(t *testing.T) {
 				require.Equal(t, expectedArgs, ds.Spec.Template.Spec.Containers[0].Args)
 			}
 
-			// A slow start gets up to 5 minutes before the liveness probe applies.
+			// The chart's startup probe controls how long a slow start may take.
 			startupProbe := ds.Spec.Template.Spec.Containers[0].StartupProbe
 			require.NotNil(t, startupProbe, "dcgm-exporter must have a startup probe")
 			require.NotNil(t, startupProbe.HTTPGet)
-			require.Equal(t, "/healthz", startupProbe.HTTPGet.Path)
+			defaults, err := dcgmexporter.DefaultDeploymentDefaults()
+			require.NoError(t, err)
+			metricsPort, err := defaults.Port(dcgmexporter.MetricsPortName)
+			require.NoError(t, err)
+			healthPort, err := defaults.Port(dcgmexporter.HealthPortName)
+			require.NoError(t, err)
+			require.Equal(t, defaults.StartupProbe.HTTPGet.Path, startupProbe.HTTPGet.Path)
 			require.Equal(t, dcgmexporter.HealthPortName, startupProbe.HTTPGet.Port.String())
-			require.Equal(t, "/readyz", ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Path)
+			require.Equal(t, defaults.ReadinessProbe.HTTPGet.Path, ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Path)
 			require.Equal(t, dcgmexporter.HealthPortName, ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.String())
-			require.Equal(t, int32(5), startupProbe.PeriodSeconds)
-			require.Equal(t, int32(60), startupProbe.FailureThreshold)
-			require.Equal(t, dcgmexporter.HealthPort, ds.Spec.Template.Spec.Containers[0].Ports[1].ContainerPort)
+			require.Equal(t, defaults.StartupProbe.PeriodSeconds, startupProbe.PeriodSeconds)
+			require.Equal(t, defaults.StartupProbe.FailureThreshold, startupProbe.FailureThreshold)
+			require.Equal(t, metricsPort, ds.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)
+			require.Equal(t, healthPort, ds.Spec.Template.Spec.Containers[0].Ports[1].ContainerPort)
 
 			// Liveness and readiness start once the startup probe succeeds, so a
 			// delay would only hold back a pod that is already serving.
@@ -2341,7 +2349,9 @@ func TestService(t *testing.T) {
 	// Template Service
 	service := corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: testService},
-		Spec:       corev1.ServiceSpec{},
+		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{
+			Name: "gpu-metrics", Port: 9400, TargetPort: intstr.FromInt32(9400),
+		}}},
 	}
 
 	// Helper to create controller with given spec
@@ -2452,6 +2462,10 @@ func TestService(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, tc.expectedType, found.Spec.Type)
+			require.Len(t, found.Spec.Ports, 1)
+			require.Equal(t, "gpu-metrics", found.Spec.Ports[0].Name)
+			require.Equal(t, int32(9400), found.Spec.Ports[0].Port)
+			require.Equal(t, intstr.FromString(dcgmexporter.MetricsPortName), found.Spec.Ports[0].TargetPort)
 			if tc.expectedPolicy != nil {
 				require.NotNil(t, found.Spec.InternalTrafficPolicy)
 				require.Equal(t, *tc.expectedPolicy, *found.Spec.InternalTrafficPolicy)

@@ -21,6 +21,7 @@ import (
 	"maps"
 	"path/filepath"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -101,6 +102,10 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	}
 
 	configOptions := dcgmexporter.ConfigOptionsFromSpec(spec, remoteHostEngine, spec.IsHostNetworkEnabled(), true)
+	containerDefaults := &corev1.Container{}
+	if err := dcgmexporter.ApplyDeploymentDefaults(containerDefaults, configOptions.HostNetwork); err != nil {
+		return nil, err
+	}
 	exporterConfig, err := dcgmexporter.RenderConfig(configOptions)
 	if err != nil {
 		return nil, err
@@ -144,8 +149,7 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		HostNetwork:                  configOptions.HostNetwork,
 		MetricsConfigName:            metricsConfigName,
 		MetricsConfigMountDirectory:  filepath.Dir(dcgmexporter.CustomMetricsFilePath),
-		HealthPort:                   dcgmexporter.HealthPort,
-		HealthPortName:               dcgmexporter.HealthPortName,
+		ContainerDefaults:            containerDefaults,
 		ServiceMonitorEnabled:        serviceMonitorEnabled,
 		PodResourcesDir:              filepath.Join(kubeletRootDir, "pod-resources"),
 		ServiceType:                  serviceType,
