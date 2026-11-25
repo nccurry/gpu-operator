@@ -165,11 +165,15 @@ func TestDCGMExporterCustomMetricsConfig(t *testing.T) {
 
 	ds := findDaemonSet(t, objs)
 	env := envMap(ds.Spec.Template.Spec.Containers[0].Env)
-	assert.Equal(t, "/etc/dcgm-exporter/dcgm-metrics.csv", env["DCGM_EXPORTER_COLLECTORS"])
+	assert.Equal(t, "/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv", env["DCGM_EXPORTER_COLLECTORS"])
 
 	vol := findVolume(t, ds, "metrics-config")
 	require.NotNil(t, vol.ConfigMap)
 	assert.Equal(t, "custom-dcgm-exporter-metrics", vol.ConfigMap.Name)
+	assert.Equal(t, []corev1.KeyToPath{{Key: "dcgm-metrics.csv", Path: "dcgm-metrics.csv"}}, vol.ConfigMap.Items)
+	assert.Contains(t, ds.Spec.Template.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+		Name: "metrics-config", ReadOnly: true, MountPath: "/etc/dcgm-exporter/operator/metrics",
+	}, "the ConfigMap key is projected into its parent directory without subPath")
 }
 
 func TestDCGMExporterHPCJobMapping(t *testing.T) {

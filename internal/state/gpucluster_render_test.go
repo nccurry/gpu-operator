@@ -200,6 +200,18 @@ func TestGPUClusterRenderGolden(t *testing.T) {
 			},
 		},
 		{
+			name: "gpucluster-dcgm-exporter-custom-metrics",
+			render: func(t *testing.T) []*unstructured.Unstructured {
+				s := newTestDCGMExporterState(t, false)
+				cr := exporterCR(&nvidiav1.DCGMExporterSpec{
+					MetricsConfig: &nvidiav1.DCGMExporterMetricsConfig{Name: "custom-dcgm-exporter-metrics"},
+				})
+				objs, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+				require.NoError(t, err)
+				return objs
+			},
+		},
+		{
 			// dcgm enabled: the exporter wires DCGM_REMOTE_HOSTENGINE_INFO to the
 			// standalone hostengine Service.
 			name: "gpucluster-dcgm-exporter-remote-engine",

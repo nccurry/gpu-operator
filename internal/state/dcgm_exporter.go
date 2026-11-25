@@ -40,7 +40,8 @@ const (
 	dcgmRemoteHostEngine = "nvidia-dcgm-dra:5555"
 
 	dcgmExporterDefaultCollectors     = "/etc/dcgm-exporter/default-counters.csv"
-	dcgmExporterCustomCollectors      = "/etc/dcgm-exporter/dcgm-metrics.csv"
+	dcgmExporterCustomCollectorsDir   = "/etc/dcgm-exporter/operator/metrics"
+	dcgmExporterCustomCollectorsKey   = "dcgm-metrics.csv"
 	dcgmExporterDefaultKubeletRootDir = "/var/lib/kubelet"
 	dcgmExporterDefaultJobMappingDir  = "/var/lib/dcgm-exporter/job-mapping"
 )
@@ -83,7 +84,7 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	metricsConfigName := ""
 	if spec.MetricsConfig != nil && spec.MetricsConfig.Name != "" {
 		metricsConfigName = spec.MetricsConfig.Name
-		collectors = dcgmExporterCustomCollectors
+		collectors = filepath.Join(dcgmExporterCustomCollectorsDir, dcgmExporterCustomCollectorsKey)
 	}
 
 	hpcJobMappingDir := ""
