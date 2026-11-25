@@ -387,7 +387,7 @@ dcgmExporter:
   # When pointing to an existing ConfigMap, the ConfigMap must exist in the same namespace as the release.
   # The metrics are expected to be listed under a key called `dcgm-metrics.csv`.
   # The Operator mounts this CSV at `/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv`.
-  # If `DCGM_EXPORTER_COLLECTORS` or `--collectors` explicitly uses the former
+  # If `DCGM_EXPORTER_COLLECTORS` or `--collectors/-f` explicitly uses the former
   # `/etc/dcgm-exporter/dcgm-metrics.csv` path, update the override to this path.
   # Use "data" to build an integrated ConfigMap from a set of custom metrics as
   # part of the chart. An example of some custom metrics are shown below. Note that
