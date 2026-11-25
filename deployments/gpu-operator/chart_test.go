@@ -46,6 +46,61 @@ func TestOperatorRejectsInvalidReplicaCount(t *testing.T) {
 	}
 }
 
+func TestExporterConfigValuesCanBeMissingFromOlderRelease(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm binary not found in PATH")
+	}
+
+	for _, test := range []struct {
+		name    string
+		values  string
+		wantCR  string
+		otherCR string
+	}{
+		{
+			name: "ClusterPolicy",
+			values: `
+clusterPolicy:
+  deployCR: true
+gpuCluster:
+  deployCR: false
+driver:
+  nvidiaDriverCRD: {enabled: true}
+dcgmExporter:
+  nativeConfig: null
+  webConfig: null
+`,
+			wantCR:  "kind: ClusterPolicy",
+			otherCR: "kind: GPUCluster",
+		},
+		{
+			name: "GPUCluster",
+			values: `
+clusterPolicy:
+  deployCR: false
+gpuCluster:
+  deployCR: true
+driver:
+  nvidiaDriverCRD: {enabled: true}
+dcgmExporter:
+  nativeConfig: null
+  webConfig: null
+`,
+			wantCR:  "kind: GPUCluster",
+			otherCR: "kind: ClusterPolicy",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := exec.Command("helm", "template", "gpu-operator", ".", "--namespace", "gpu-operator", "--api-versions", "resource.k8s.io/v1/DeviceClass", "--values", "-")
+			cmd.Stdin = strings.NewReader(test.values)
+			output, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(output))
+			require.Contains(t, string(output), test.wantCR)
+			require.NotContains(t, string(output), test.otherCR)
+		})
+	}
+}
+
 // renderChart returns the operator Deployment and, if rendered, its PodDisruptionBudget.
 func renderChart(t *testing.T, values string) (*appsv1.Deployment, *policyv1.PodDisruptionBudget) {
 	t.Helper()

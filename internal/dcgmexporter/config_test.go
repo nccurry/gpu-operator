@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	"sigs.k8s.io/yaml"
 
@@ -82,6 +83,20 @@ func TestRenderConfigUsesOperatorInputs(t *testing.T) {
 	assert.Equal(t, true, kubernetes["pod_uid"])
 	assert.Equal(t, map[string]any{"enabled": true, "allow": []any{".*"}}, kubernetes["pod_labels"])
 	assert.Equal(t, defaultPortAddress(t, "127.0.0.1", HealthPortName), config["server"].(map[string]any)["listen_health"])
+}
+
+func TestRenderConfigUsesWebConfigSecretPath(t *testing.T) {
+	spec := &gpuv1.DCGMExporterSpec{WebConfig: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "web-config"},
+		Key:                  "web.yaml",
+	}}
+	options := ConfigOptionsFromSpec(spec, "", false, false)
+	configYAML, err := RenderConfig(options)
+	require.NoError(t, err)
+
+	config := parseConfig(t, configYAML)
+	server := config["server"].(map[string]any)
+	assert.Equal(t, WebConfigFilePathForKey("web.yaml"), server["web_config_file"])
 }
 
 func TestConfigOptionsFromSpecPreservesOverrides(t *testing.T) {
@@ -387,6 +402,32 @@ func defaultPortAddress(t *testing.T, host, name string) string {
 	port, err := defaults.Port(name)
 	require.NoError(t, err)
 	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+}
+
+func TestValidateWebConfigOverride(t *testing.T) {
+	const projectedPath = WebConfigDirectory + "/web-config.yaml"
+	for _, test := range []struct {
+		name         string
+		args         []string
+		env          []gpuv1.EnvVar
+		selectedPath string
+		wantErr      string
+	}{
+		{name: "matching environment selector", env: []gpuv1.EnvVar{{Name: webConfigFileEnvName, Value: projectedPath}}, selectedPath: projectedPath},
+		{name: "matching flag overrides environment", args: []string{"--web-config-file", projectedPath}, env: []gpuv1.EnvVar{{Name: webConfigFileEnvName, Value: "/tmp/other.yaml"}}, selectedPath: projectedPath},
+		{name: "mismatched flag", args: []string{"--web-config-file=/tmp/other.yaml"}, selectedPath: projectedPath, wantErr: "--web-config-file=/tmp/other.yaml"},
+		{name: "mismatched environment", env: []gpuv1.EnvVar{{Name: webConfigFileEnvName, Value: "/tmp/other.yaml"}}, selectedPath: projectedPath, wantErr: webConfigFileEnvName},
+		{name: "user option remains when no Secret is selected", args: []string{"--web-config-file", "/tmp/user.yaml"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateWebConfigOverride(test.args, test.env, test.selectedPath)
+			if test.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, test.wantErr)
+		})
+	}
 }
 
 func parseConfig(t *testing.T, content []byte) map[string]any {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
@@ -236,6 +238,106 @@ func TestDCGMExporterCollectorOverrides(t *testing.T) {
 	})
 }
 
+func TestDCGMExporterNativeConfigAndWebSecretProjection(t *testing.T) {
+	webSelector := &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-web-v1"},
+		Key:                  "web-config.yaml",
+	}
+	spec := &nvidiav1.DCGMExporterSpec{
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-config-v1"},
+			Key:                  "custom-exporter.yaml",
+		},
+		WebConfig: webSelector,
+	}
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptionsFromSpec(spec, "", false, true))
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: spec.NativeConfig.Name, Namespace: "test-operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{spec.NativeConfig.Key: string(configBytes)},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: webSelector.Name, Namespace: "test-operator"},
+		Data: map[string][]byte{
+			webSelector.Key: []byte("tls config"),
+			"tls.crt":       []byte("certificate"),
+			"tls.key":       []byte("private key"),
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap, secret).Build()
+	s := newTestDCGMExporterState(t, false)
+	s.client = k8sClient
+
+	objs, err := s.getManifestObjects(context.Background(), exporterCR(spec), draSupportedCatalog())
+	require.NoError(t, err)
+	daemonSet := findDaemonSet(t, objs)
+	podSpec := daemonSet.Spec.Template.Spec
+	configVolume := findVolume(t, daemonSet, dcgmexporter.ConfigVolumeName)
+	require.NotNil(t, configVolume.ConfigMap)
+	assert.Equal(t, spec.NativeConfig.Name, configVolume.ConfigMap.Name)
+	require.Len(t, configVolume.ConfigMap.Items, 1)
+	assert.Equal(t, spec.NativeConfig.Key, configVolume.ConfigMap.Items[0].Key)
+	assert.Equal(t, dcgmexporter.ConfigFileName, configVolume.ConfigMap.Items[0].Path)
+	assert.Equal(t, dcgmexporter.ConfigFilePath, envMap(podSpec.Containers[0].Env)[dcgmexporter.ConfigFileEnvName])
+	assert.NotContains(t, daemonSet.Spec.Template.Annotations, dcgmexporter.ConfigAnnotation)
+
+	webVolume := findVolume(t, daemonSet, dcgmexporter.WebConfigVolumeName)
+	require.NotNil(t, webVolume.Secret)
+	assert.Equal(t, webSelector.Name, webVolume.Secret.SecretName)
+	require.NotNil(t, webVolume.Secret.DefaultMode)
+	assert.Equal(t, int32(0440), *webVolume.Secret.DefaultMode)
+	assert.Nil(t, webVolume.Secret.Items, "all Secret keys are projected so certificate files remain available")
+	require.Contains(t, podSpec.Containers[0].VolumeMounts, corev1.VolumeMount{
+		Name:      dcgmexporter.WebConfigVolumeName,
+		ReadOnly:  true,
+		MountPath: dcgmexporter.WebConfigDirectory,
+	})
+
+	assert.Contains(t, string(configBytes), dcgmexporter.WebConfigFilePathForKey(webSelector.Key))
+	assert.Equal(t, 0, kindCounts(objs)["ConfigMap"], "native configuration must remain in the selected immutable ConfigMap")
+}
+
+func TestDCGMExporterInvalidNativeConfigKeepsPreviousDaemonSet(t *testing.T) {
+	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "mutable-config"},
+			Key:                  "exporter.yaml",
+		},
+	})
+	previous := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "nvidia-dcgm-exporter-dra", Namespace: "test-operator"},
+		Spec:       appsv1.DaemonSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "existing-exporter"}}}}},
+	}
+	immutable := false
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "mutable-config", Namespace: "test-operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": "not a complete native revision"},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRESTMapper(restMapperWithServiceMonitor(false)).
+		WithObjects(previous, configMap).
+		Build()
+	s := newTestDCGMExporterState(t, false)
+	s.client = k8sClient
+
+	state, err := s.Sync(context.Background(), cr, draSupportedCatalog())
+	require.ErrorContains(t, err, "must be immutable")
+	assert.Equal(t, SyncState(SyncStateNotReady), state)
+
+	retained := &appsv1.DaemonSet{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(previous), retained))
+	assert.Equal(t, previous, retained)
+}
+
 func TestDCGMExporterHPCJobMapping(t *testing.T) {
 	s := newTestDCGMExporterState(t, false)
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
@@ -409,7 +511,7 @@ func exporterConfig(t *testing.T, objs []*unstructured.Unstructured) string {
 func TestDCGMExporterServiceMonitorSkippedWithoutCRD(t *testing.T) {
 	s := newTestDCGMExporterState(t, false) // ServiceMonitor CRD not served
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
-		ServiceMonitor: &nvidiav1.ServiceMonitorConfig{Enabled: new(true)},
+		ServiceMonitor: &nvidiav1.DCGMExporterServiceMonitorConfig{Enabled: new(true)},
 	})
 
 	objs, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
@@ -421,7 +523,7 @@ func TestDCGMExporterServiceMonitorSkippedWithoutCRD(t *testing.T) {
 func TestDCGMExporterServiceMonitorRendered(t *testing.T) {
 	s := newTestDCGMExporterState(t, true) // ServiceMonitor CRD served
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
-		ServiceMonitor: &nvidiav1.ServiceMonitorConfig{
+		ServiceMonitor: &nvidiav1.DCGMExporterServiceMonitorConfig{
 			Enabled:  new(true),
 			Interval: "15s",
 		},
@@ -435,11 +537,60 @@ func TestDCGMExporterServiceMonitorRendered(t *testing.T) {
 	assert.Equal(t, "nvidia-dcgm-exporter-dra", sm.GetName())
 }
 
+func TestDCGMExporterServiceMonitorBasicAuthUsesHTTPS(t *testing.T) {
+	s := newTestDCGMExporterState(t, true)
+	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
+		ServiceMonitor: &nvidiav1.DCGMExporterServiceMonitorConfig{
+			Enabled: new(true),
+			BasicAuth: &promv1.BasicAuth{
+				Username: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-auth"},
+					Key:                  "username",
+				},
+				Password: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-auth"},
+					Key:                  "password",
+				},
+			},
+		},
+	})
+
+	objs, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+	require.NoError(t, err)
+	serviceMonitor := findByKind(objs, "ServiceMonitor")
+	require.NotNil(t, serviceMonitor)
+	endpoints, found, err := unstructured.NestedSlice(serviceMonitor.Object, "spec", "endpoints")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, endpoints, 1)
+	endpoint := endpoints[0].(map[string]any)
+	assert.Equal(t, "HTTPS", endpoint["scheme"])
+	assert.NotContains(t, endpoint, "tlsConfig")
+	assert.Contains(t, endpoint, "basicAuth")
+}
+
 func TestDCGMExporterServiceMonitorRelabelings(t *testing.T) {
 	s := newTestDCGMExporterState(t, true)
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
-		ServiceMonitor: &nvidiav1.ServiceMonitorConfig{
+		ServiceMonitor: &nvidiav1.DCGMExporterServiceMonitorConfig{
 			Enabled: new(true),
+			TLSConfig: &promv1.SafeTLSConfig{
+				CA: promv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "prometheus-ca"},
+					Key:                  "ca.crt",
+				}},
+				ServerName: new("dcgm-exporter.example"),
+			},
+			BasicAuth: &promv1.BasicAuth{
+				Username: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "dcgm-exporter-auth"},
+					Key:                  "username",
+				},
+				Password: corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "dcgm-exporter-auth"},
+					Key:                  "password",
+				},
+			},
 			Relabelings: []*promv1.RelabelConfig{{
 				Action:       "replace",
 				Regex:        "(.*)",
@@ -465,6 +616,22 @@ func TestDCGMExporterServiceMonitorRelabelings(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, endpoints, 1)
 	endpoint := endpoints[0].(map[string]any)
+
+	assert.Equal(t, "HTTPS", endpoint["scheme"])
+	tlsConfig, ok := endpoint["tlsConfig"].(map[string]any)
+	require.True(t, ok)
+	ca, ok := tlsConfig["ca"].(map[string]any)
+	require.True(t, ok)
+	secret, ok := ca["secret"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "prometheus-ca", secret["name"])
+	assert.Equal(t, "ca.crt", secret["key"])
+	auth, ok := endpoint["basicAuth"].(map[string]any)
+	require.True(t, ok)
+	username, ok := auth["username"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "dcgm-exporter-auth", username["name"])
+	assert.Equal(t, "username", username["key"])
 
 	relabelings, ok := endpoint["relabelings"].([]any)
 	require.True(t, ok, "relabelings must be rendered")

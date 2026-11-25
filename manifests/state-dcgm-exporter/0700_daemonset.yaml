@@ -111,6 +111,11 @@ spec:
         - name: {{ .ConfigVolumeName }}
           readOnly: true
           mountPath: {{ .ConfigFileDirectory }}
+        {{- if .WebConfigSecretName }}
+        - name: dcgm-exporter-web-config
+          readOnly: true
+          mountPath: {{ .WebConfigMountDirectory }}
+        {{- end }}
         - name: pod-gpu-resources
           readOnly: true
           mountPath: /var/lib/kubelet/pod-resources
@@ -126,11 +131,25 @@ spec:
         {{- end }}
       volumes:
       - name: {{ .ConfigVolumeName }}
+        {{- if .NativeConfigName }}
+        configMap:
+          name: {{ .NativeConfigName }}
+          items:
+          - key: {{ .NativeConfigKey }}
+            path: {{ .ConfigFileName }}
+        {{- else }}
         downwardAPI:
           items:
           - fieldRef:
               fieldPath: {{ printf "metadata.annotations['%s']" .ConfigAnnotation | quote }}
             path: {{ .ConfigFileName }}
+        {{- end }}
+      {{- if .WebConfigSecretName }}
+      - name: dcgm-exporter-web-config
+        secret:
+          secretName: {{ .WebConfigSecretName }}
+          defaultMode: 288
+      {{- end }}
       - name: pod-gpu-resources
         hostPath:
           path: {{ .PodResourcesDir }}
