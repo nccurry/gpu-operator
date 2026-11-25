@@ -290,7 +290,7 @@ func TestValidateUserOverrides(t *testing.T) {
 			want: "--address",
 		},
 		"address short alias with incompatible port": {
-			args: []string{"--a", ":9500"},
+			args: []string{"--a", fmt.Sprintf(":%d", metricsPort+1)},
 			want: "--a",
 		},
 		"listener host conflicts with Service": {
@@ -345,6 +345,7 @@ func TestValidateUserOverridesAllowsCompatibleOptions(t *testing.T) {
 	}{
 		{name: "no overrides"},
 		{name: "metrics wildcard listener", args: []string{"--address", metricsAddress}},
+		{name: "metrics address alias", args: []string{"--a", metricsAddress}},
 		{name: "metrics IPv4 wildcard listener", env: []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: metricsIPv4Address}}},
 		{name: "metrics IPv6 wildcard listener", args: []string{"-a", metricsIPv6Address}},
 		{name: "Kubernetes-expanded listener", args: []string{"--address", "$(EXPORTER_LISTEN_ADDRESS)"}},
@@ -352,6 +353,7 @@ func TestValidateUserOverridesAllowsCompatibleOptions(t *testing.T) {
 		{name: "Kubernetes-expanded host with Service port", args: []string{"--address", fmt.Sprintf("$(EXPORTER_HOST):%d", metricsPort)}},
 		{name: "Kubernetes-expanded port with wildcard host", args: []string{"--address", "0.0.0.0:$(EXPORTER_PORT)"}},
 		{name: "operator metrics path", args: []string{"--collectors=" + CustomMetricsFilePath}},
+		{name: "operator metrics path alias", args: []string{"--f", CustomMetricsFilePath}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			require.NoError(t, ValidateUserOverrides(test.args, test.env))
