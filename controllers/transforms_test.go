@@ -1433,6 +1433,28 @@ func TestTransformMPSControlDaemon(t *testing.T) {
 	}
 }
 
+func TestDCGMExporterCollectorOverrides(t *testing.T) {
+	spec := &gpuv1.ClusterPolicySpec{
+		DCGMExporter: gpuv1.DCGMExporterSpec{
+			Repository:    "nvcr.io/nvidia/k8s",
+			Image:         "dcgm-exporter",
+			Version:       "4.9.0",
+			MetricsConfig: &gpuv1.DCGMExporterMetricsConfig{Name: "counters"},
+			Args:          []string{"--collectors=/user/flags.csv"},
+			Env:           []gpuv1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"}},
+		},
+	}
+	ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+	err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+	require.NoError(t, err)
+	container := ds.Spec.Template.Spec.Containers[0]
+	require.Equal(t, spec.DCGMExporter.Args, container.Args)
+	require.Contains(t, container.Env, corev1.EnvVar{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name: "metrics-config", ReadOnly: true, MountPath: "/etc/dcgm-exporter/operator/metrics",
+	})
+}
+
 func TestTransformDCGMExporter(t *testing.T) {
 	testCases := []struct {
 		description      string
@@ -1444,7 +1466,13 @@ func TestTransformDCGMExporter(t *testing.T) {
 		{
 			description: "transform dcgm exporter",
 			ds: NewDaemonset().
-				WithContainer(corev1.Container{Name: "dcgm-exporter"}).
+				WithContainer(corev1.Container{
+					Name: "dcgm-exporter",
+					Env: []corev1.EnvVar{{
+						Name:  "DCGM_EXPORTER_COLLECTORS",
+						Value: "/etc/dcgm-exporter/default-counters.csv",
+					}},
+				}).
 				WithContainer(corev1.Container{Name: "dummy"}).
 				WithHostPathVolume("pod-resources", "/var/lib/kubelet/pod-resources", nil),
 			cpSpec: &gpuv1.ClusterPolicySpec{
@@ -1469,6 +1497,7 @@ func TestTransformDCGMExporter(t *testing.T) {
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Args:            []string{"--fail-on-init-error=false"},
 				Env: []corev1.EnvVar{
+					{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/etc/dcgm-exporter/default-counters.csv"},
 					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
 					{Name: "foo", Value: "bar"},
 				},
@@ -1898,6 +1927,42 @@ func TestTransformDCGMExporter(t *testing.T) {
 				},
 			}).WithRuntimeClassName("nvidia").
 				WithAutomountServiceAccountToken(true),
+		},
+		{
+			description: "transform dcgm exporter with custom metrics config",
+			ds:          NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"}),
+			cpSpec: &gpuv1.ClusterPolicySpec{
+				DCGMExporter: gpuv1.DCGMExporterSpec{
+					Repository:      "nvcr.io/nvidia/cloud-native",
+					Image:           "dcgm-exporter",
+					Version:         "v1.0.0",
+					ImagePullPolicy: "IfNotPresent",
+					MetricsConfig:   &gpuv1.DCGMExporterMetricsConfig{Name: "custom-dcgm-exporter-metrics"},
+				},
+				DCGM: gpuv1.DCGMSpec{Enabled: newBoolPtr(true)},
+			},
+			expectedDs: NewDaemonset().WithContainer(corev1.Container{
+				Name:            "dcgm-exporter",
+				Image:           "nvcr.io/nvidia/cloud-native/dcgm-exporter:v1.0.0",
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Env: []corev1.EnvVar{
+					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
+					{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv"},
+				},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "metrics-config",
+					ReadOnly:  true,
+					MountPath: "/etc/dcgm-exporter/operator/metrics",
+				}},
+			}).WithRuntimeClassName("nvidia").WithVolume(corev1.Volume{
+				Name: "metrics-config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "custom-dcgm-exporter-metrics"},
+						Items:                []corev1.KeyToPath{{Key: "dcgm-metrics.csv", Path: "dcgm-metrics.csv"}},
+					},
+				},
+			}),
 		},
 		{
 			description: "transform dcgm exporter with configmap data env set to none",

@@ -133,8 +133,8 @@ const (
 	GPUDirectRDMAEnabledEnvName = "GPU_DIRECT_RDMA_ENABLED"
 	// UseHostMOFEDEnvName indicates if MOFED driver is pre-installed on the host
 	UseHostMOFEDEnvName = "USE_HOST_MOFED"
-	// MetricsConfigMountPath indicates mount path for custom dcgm metrics file
-	MetricsConfigMountPath = "/etc/dcgm-exporter/" + MetricsConfigFileName
+	// MetricsConfigMountDir indicates the directory for custom dcgm metrics files.
+	MetricsConfigMountDir = "/etc/dcgm-exporter/operator/metrics"
 	// MetricsConfigFileName indicates custom dcgm metrics file name
 	MetricsConfigFileName = "dcgm-metrics.csv"
 	// NvidiaAnnotationHashKey indicates annotation name for last applied hash by gpu-operator
@@ -1944,7 +1944,7 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 
 	// mount configmap for custom metrics if provided by user
 	if config.DCGMExporter.MetricsConfig != nil && config.DCGMExporter.MetricsConfig.Name != "" {
-		metricsConfigVolMount := corev1.VolumeMount{Name: "metrics-config", ReadOnly: true, MountPath: MetricsConfigMountPath, SubPath: MetricsConfigFileName}
+		metricsConfigVolMount := corev1.VolumeMount{Name: "metrics-config", ReadOnly: true, MountPath: MetricsConfigMountDir}
 		obj.Spec.Template.Spec.Containers[0].VolumeMounts = append(obj.Spec.Template.Spec.Containers[0].VolumeMounts, metricsConfigVolMount)
 
 		metricsConfigVolumeSource := corev1.VolumeSource{
@@ -1963,7 +1963,7 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 		metricsConfigVol := corev1.Volume{Name: "metrics-config", VolumeSource: metricsConfigVolumeSource}
 		obj.Spec.Template.Spec.Volumes = append(obj.Spec.Template.Spec.Volumes, metricsConfigVol)
 
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), "DCGM_EXPORTER_COLLECTORS", MetricsConfigMountPath)
+		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), "DCGM_EXPORTER_COLLECTORS", filepath.Join(MetricsConfigMountDir, MetricsConfigFileName))
 	}
 
 	const podResourcesVolume = "pod-gpu-resources"
