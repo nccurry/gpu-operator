@@ -138,7 +138,7 @@ func serviceAddress(address string, metricsPort int32) bool {
 		return false
 	}
 	portNumber, err := strconv.Atoi(port)
-	if err != nil || portNumber != int(metricsPort) {
+	if err != nil || portNumber < 1 || portNumber > 65535 || portNumber != int(metricsPort) {
 		return false
 	}
 	return host == "" || host == "0.0.0.0" || host == "::"
