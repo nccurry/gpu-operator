@@ -5,9 +5,8 @@ stack. Install the upstream DCGM Exporter Helm chart separately only when you
 want that chart release or GitOps application to own the exporter lifecycle.
 Keep one exporter workload on each GPU node.
 
-The commands below target DCGM Exporter 4.10.0. Confirm that version is
-published before installing it. Use the matching chart and image release, and
-check its release notes for the supported DCGM version pair. For installation
+The commands below use the DCGM Exporter 4.10.0 chart and image. Check the
+release notes for the supported DCGM version pair. For installation
 requirements and current chart repository details, see the [DCGM Exporter
 installation guide](https://docs.nvidia.com/datacenter/dcgm/latest/installation/install-dcgm-exporter.html).
 
@@ -35,12 +34,14 @@ this chart. If the cluster does not have the Prometheus Operator CRDs, set
 Use your cluster's GPU node label and add the tolerations needed by its GPU
 nodes. The chart's `tolerations` value replaces its default list.
 
-For example, a cluster using the GPU Operator's GPU-present label and the
-`nvidia.com/gpu:NoSchedule` taint can use:
+For ClusterPolicy nodes with the `nvidia.com/gpu:NoSchedule` taint, the
+following values make the independent exporter follow the Operator's exporter
+deployment label. The DaemonSet releases the node when the driver manager
+pauses that label and returns when the label is restored.
 
 ```yaml
 nodeSelector:
-  nvidia.com/gpu.present: "true"
+  nvidia.com/gpu.deploy.dcgm-exporter: "true"
 
 tolerations:
   - key: nvidia.com/gpu
@@ -51,7 +52,8 @@ serviceMonitor:
   enabled: true
 ```
 
-Set `serviceMonitor.enabled` to `false` if those CRDs are not installed.
+Set `runtimeClassName: nvidia` on clusters that require the NVIDIA runtime
+class for GPU device and driver-library access.
 
 ## Choose where DCGM runs
 
@@ -98,9 +100,9 @@ exporter connected to the hostengine on its own node. An external hostengine
 uses its own DNS name or address and port in `config.sources.dcgm.hostengine`;
 the operator Service policy does not apply to external endpoints.
 
-The chart keeps metrics on port `9400`. Its health listener defaults to port
-`9401`; with `hostNetwork: true`, it binds that listener to `127.0.0.1` so the
-probes do not conflict with another host-networked process.
+The chart serves metrics on port `9400` and health checks on port `9401`. With
+`hostNetwork: true`, the health listener binds to `127.0.0.1`. Both ports must
+be available on every eligible node.
 
 ## Switch ownership safely
 
@@ -131,9 +133,9 @@ the same nodes during the handoff.
 ## Platform boundaries
 
 This chart is owned by its Helm or GitOps release. The GPU Operator does not
-own its DaemonSet or include it in the Operator-managed exporter rollout. This
-render-only guide does not qualify GPU Operator driver-drain behavior for an
-independent release.
+own its DaemonSet or include it in the Operator-managed exporter rollout. The deploy label controls scheduling. Validate the complete driver upgrade
+procedure on your platform before relying on the independent exporter during
+driver maintenance.
 
 The upstream chart can configure DRA enrichment and the related Kubernetes
 read permissions, but its rendered DaemonSet does not include a GPU
