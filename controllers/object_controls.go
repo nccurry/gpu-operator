@@ -784,6 +784,8 @@ func preProcessDaemonSet(obj *appsv1.DaemonSet, n ClusterPolicyController) error
 		logger.Error(err, "Failed to apply common Daemonset transformation", "resource", obj.Name)
 		return err
 	}
+	// Make global annotations visible to DCGM Exporter's reserved-key and size checks.
+	applyCommonDaemonsetAnnotations(obj, &n.singleton.Spec.Daemonsets)
 
 	// transform the host-root and host-dev-char volumes if a custom host root is configured with the operator
 	transformForHostRoot(obj, n.singleton.Spec.HostPaths.RootFS)
@@ -816,12 +818,17 @@ func applyCommonDaemonsetMetadata(obj *appsv1.DaemonSet, dsSpec *gpuv1.Daemonset
 		applyCommonDaemonsetLabel(obj, labelKey, labelValue, logger)
 	}
 
-	if len(dsSpec.Annotations) > 0 {
-		if obj.Spec.Template.Annotations == nil {
-			obj.Spec.Template.Annotations = make(map[string]string)
-		}
-		maps.Copy(obj.Spec.Template.Annotations, dsSpec.Annotations)
+	applyCommonDaemonsetAnnotations(obj, dsSpec)
+}
+
+func applyCommonDaemonsetAnnotations(obj *appsv1.DaemonSet, dsSpec *gpuv1.DaemonsetsSpec) {
+	if len(dsSpec.Annotations) == 0 {
+		return
 	}
+	if obj.Spec.Template.Annotations == nil {
+		obj.Spec.Template.Annotations = make(map[string]string)
+	}
+	maps.Copy(obj.Spec.Template.Annotations, dsSpec.Annotations)
 }
 
 // applyCommonDaemonsetLabel merges a custom label while preserving existing component

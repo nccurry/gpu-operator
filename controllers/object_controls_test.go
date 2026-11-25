@@ -2628,6 +2628,49 @@ func TestDCGMExporterNativePodMetadataRequiresExplicitRBACOptIn(t *testing.T) {
 	require.Equal(t, updatedBinding.Subjects, retainedBinding.Subjects)
 }
 
+func TestPreProcessNativeExporterRejectsGlobalReservedAnnotation(t *testing.T) {
+	const operatorNamespace = "operator"
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "exporter-config", Namespace: operatorNamespace},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	policy := &gpuv1.ClusterPolicy{
+		Spec: gpuv1.ClusterPolicySpec{
+			Daemonsets: gpuv1.DaemonsetsSpec{
+				Annotations: map[string]string{dcgmexporter.ConfigAnnotation: "user-value"},
+			},
+			DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository: "nvcr.io/nvidia/k8s",
+				Image:      "dcgm-exporter",
+				Version:    "4.10.0",
+				NativeConfig: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+					Key:                  "exporter.yaml",
+				},
+			},
+		},
+	}
+	daemonSet := NewDaemonset().WithName("nvidia-dcgm-exporter").WithContainer(corev1.Container{Name: "dcgm-exporter"}).DaemonSet
+	controller := ClusterPolicyController{
+		ctx:               context.Background(),
+		singleton:         policy,
+		client:            k8sClient,
+		logger:            ctrl.Log.WithName("test"),
+		operatorNamespace: operatorNamespace,
+		runtime:           gpuv1.Containerd,
+	}
+
+	err = preProcessDaemonSet(daemonSet, controller)
+	require.ErrorContains(t, err, "reserved")
+}
+
 func TestService(t *testing.T) {
 	const (
 		testNamespace = "test-namespace"
