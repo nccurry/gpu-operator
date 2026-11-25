@@ -108,6 +108,14 @@ func TestConfigOptionsRecognizeSingleDashLongHostEngineFlag(t *testing.T) {
 	assert.True(t, options.HostNetwork, "the released CLI accepts the single-dash long flag")
 }
 
+func TestConfigOptionsRecognizeDoubleDashRemoteAlias(t *testing.T) {
+	spec := &gpuv1.DCGMExporterSpec{
+		Args: []string{"--r", "localhost:5555"},
+	}
+	options := ConfigOptionsFromSpec(spec, "nvidia-dcgm:5555", false, false)
+	assert.True(t, options.HostNetwork, "a loopback hostengine passed with --r needs host networking")
+}
+
 func TestPodMetadataOptionsUseExporterPrecedence(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -187,7 +195,7 @@ func TestEffectiveStringOptionAliasesAndPrecedence(t *testing.T) {
 			name:    "remote shorthand equals",
 			args:    []string{"-r=localhost:5555"},
 			envName: remoteHostEngineEnv,
-			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "-r"},
+			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "--r", "-r"},
 			want:    "localhost:5555",
 			set:     true,
 		},
@@ -195,7 +203,7 @@ func TestEffectiveStringOptionAliasesAndPrecedence(t *testing.T) {
 			name:    "remote long single dash",
 			args:    []string{"-remote-hostengine-info", "localhost:5555"},
 			envName: remoteHostEngineEnv,
-			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "-r"},
+			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "--r", "-r"},
 			want:    "localhost:5555",
 			set:     true,
 		},
@@ -220,7 +228,7 @@ func TestEffectiveStringOptionAliasesAndPrecedence(t *testing.T) {
 			name:    "stop at delimiter",
 			args:    []string{"--", "-r", "localhost:5555"},
 			envName: remoteHostEngineEnv,
-			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "-r"},
+			flags:   []string{"--remote-hostengine-info", "-remote-hostengine-info", "--r", "-r"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -276,6 +284,10 @@ func TestValidateUserOverrides(t *testing.T) {
 			args: []string{"--address", ":9500"},
 			want: "--address",
 		},
+		"address short alias with incompatible port": {
+			args: []string{"--a", ":9500"},
+			want: "--a",
+		},
 		"listener host conflicts with Service": {
 			env:  []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: "127.0.0.1:9400"}},
 			want: metricsListenEnvName,
@@ -294,6 +306,10 @@ func TestValidateUserOverrides(t *testing.T) {
 		},
 		"former CSV path needs migration": {
 			args: []string{"-f", oldMetricsFilePath},
+			want: CustomMetricsFilePath,
+		},
+		"double dash collectors alias needs migration": {
+			args: []string{"--f", oldMetricsFilePath},
 			want: CustomMetricsFilePath,
 		},
 	}

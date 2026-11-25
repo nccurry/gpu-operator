@@ -204,7 +204,7 @@ func ConfigOptionsFromSpec(spec *gpuv1.DCGMExporterSpec, hostEngine string, host
 	}
 
 	remoteHostEngine := hostEngine
-	if value, _, explicit := effectiveStringOption(spec.Args, spec.Env, remoteHostEngineEnv, "--remote-hostengine-info", "-remote-hostengine-info", "-r"); explicit {
+	if value, _, explicit := effectiveStringOption(spec.Args, spec.Env, remoteHostEngineEnv, "--remote-hostengine-info", "-remote-hostengine-info", "--r", "-r"); explicit {
 		remoteHostEngine = value
 	}
 	if isLoopbackHostEngine(remoteHostEngine) {

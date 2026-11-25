@@ -59,10 +59,10 @@ func ValidateUserOverrides(args []string, env []gpuv1.EnvVar) error {
 	if err := ValidateConfigFileSelection(args, env); err != nil {
 		return err
 	}
-	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-")) {
+	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "--a", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-")) {
 		return fmt.Errorf("%s sets metrics listener %q, which conflicts with the Operator Service on port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
 	}
-	if value, source, explicit := effectiveStringOption(args, env, metricsCollectorsEnvName, "--collectors", "-collectors", "-f"); explicit && value == oldMetricsFilePath {
+	if value, source, explicit := effectiveStringOption(args, env, metricsCollectorsEnvName, "--collectors", "-collectors", "--f", "-f"); explicit && value == oldMetricsFilePath {
 		return fmt.Errorf("%s selects the former custom metrics path %q; use %q", source, oldMetricsFilePath, CustomMetricsFilePath)
 	}
 	return nil
@@ -117,8 +117,8 @@ func effectiveBoolOption(defaultValue bool, args []string, env []gpuv1.EnvVar, e
 				value = true
 				break
 			}
-			if strings.HasPrefix(arg, flag+"=") {
-				if parsed, err := strconv.ParseBool(strings.TrimPrefix(arg, flag+"=")); err == nil {
+			if raw, ok := strings.CutPrefix(arg, flag+"="); ok {
+				if parsed, err := strconv.ParseBool(raw); err == nil {
 					value = parsed
 				}
 				break
