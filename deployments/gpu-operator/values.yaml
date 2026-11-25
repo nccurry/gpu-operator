@@ -380,6 +380,20 @@ dcgmExporter:
     #   regex: (.+)
     #   targetLabel: namespace
     #   action: replace
+    # Set tlsConfig to make Prometheus use HTTPS and verify the exporter certificate.
+    # tlsConfig:
+    #   ca:
+    #     secret:
+    #       name: dcgm-exporter-ca
+    #       key: ca.crt
+    # Set basicAuth to read scrape credentials from Secrets in the exporter ServiceMonitor's namespace.
+    # basicAuth:
+    #   username:
+    #     name: dcgm-exporter-scrape
+    #     key: username
+    #   password:
+    #     name: dcgm-exporter-scrape
+    #     key: password
   # DCGM Exporter configuration
   # This block is used to configure DCGM Exporter to emit a customized list of metrics.
   # Use "name" to either point to an existing ConfigMap or to create a new one with a
@@ -403,6 +417,22 @@ dcgmExporter:
       # Clocks
       # DCGM_FI_DEV_SM_CLOCK_HERTZ, gauge, SM clock frequency (in Hz).
       # DCGM_FI_DEV_MEMORY_CLOCK_HERTZ, gauge, Memory clock frequency (in Hz).
+
+  # Reference a complete v2 exporter configuration. The named ConfigMap must be
+  # immutable and in the Operator namespace. Use a new name for each config revision;
+  # changing this reference rolls the exporter Pods. The existing `config` setting
+  # above continues to select only the custom metrics CSV.
+  nativeConfig:
+    name: ""
+    key: ""
+
+  # Reference a Secret containing a Prometheus web config and any server certificate
+  # files it names. The selected key is mounted under
+  # /etc/dcgm-exporter/operator/web-config. The exporter probes remain on HTTP.
+  webConfig:
+    name: ""
+    key: ""
+
 gfd:
   enabled: true
   repository: nvcr.io/nvidia

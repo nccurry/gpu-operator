@@ -43,6 +43,10 @@ const (
 	ConfigVolumeName = "dcgm-exporter-config"
 	// ConfigAnnotation carries the generated exporter configuration for DownwardAPI projection.
 	ConfigAnnotation = "nvidia.com/dcgm-exporter-config"
+	// WebConfigDirectory is the mount directory for the exporter web configuration and its certificates.
+	WebConfigDirectory = "/etc/dcgm-exporter/operator/web-config"
+	// WebConfigVolumeName names the Secret volume for exporter web TLS and authentication.
+	WebConfigVolumeName = "dcgm-exporter-web-config"
 	// DefaultMetricsFilePath is the default metrics list included in the exporter image.
 	DefaultMetricsFilePath = "/etc/dcgm-exporter/default-counters.csv"
 	// CustomMetricsFilePath is the mounted location of a user-supplied metrics list.
@@ -62,14 +66,15 @@ const (
 
 // ConfigOptions contains settings that the Operator owns in exporter config.
 type ConfigOptions struct {
-	MetricsFilePath  string
-	HostEngine       string
-	HostNetwork      bool
-	PodUID           bool
-	PodLabels        bool
-	PodLabelAllow    []string
-	DRA              bool
-	HPCJobMappingDir string
+	MetricsFilePath   string
+	WebConfigFilePath string
+	HostEngine        string
+	HostNetwork       bool
+	PodUID            bool
+	PodLabels         bool
+	PodLabelAllow     []string
+	DRA               bool
+	HPCJobMappingDir  string
 }
 
 // RenderConfig returns a v2 exporter configuration file.
@@ -135,6 +140,10 @@ func RenderConfig(options ConfigOptions) ([]byte, error) {
 		healthListen = fmt.Sprintf("127.0.0.1:%d", healthPort)
 	}
 	metricsListenAddress := fmt.Sprintf(":%d", metricsPort)
+	server := map[string]any{"listen_health": healthListen}
+	if options.WebConfigFilePath != "" {
+		server["web_config_file"] = options.WebConfigFilePath
+	}
 	config := map[string]any{
 		"version": 2,
 		"metrics": []any{
@@ -157,7 +166,7 @@ func RenderConfig(options ConfigOptions) ([]byte, error) {
 				"listen": metricsListenAddress,
 			},
 		},
-		"server": map[string]any{"listen_health": healthListen},
+		"server": server,
 	}
 	if len(sources) > 0 {
 		config["sources"] = sources
@@ -202,6 +211,9 @@ func ConfigOptionsFromSpec(spec *gpuv1.DCGMExporterSpec, hostEngine string, host
 	}
 	if spec.MetricsConfig != nil && spec.MetricsConfig.Name != "" {
 		options.MetricsFilePath = CustomMetricsFilePath
+	}
+	if spec.WebConfig != nil && spec.WebConfig.Name != "" && spec.WebConfig.Key != "" {
+		options.WebConfigFilePath = WebConfigFilePathForKey(spec.WebConfig.Key)
 	}
 	options.PodUID = PodUIDEnabled(spec)
 	options.PodLabels = PodLabelsEnabled(spec)

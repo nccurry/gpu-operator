@@ -106,6 +106,10 @@ type dcgmExporterRenderData struct {
 	ConfigVolumeName             string
 	ConfigAnnotation             string
 	PodAnnotations               map[string]string
+	NativeConfigName             string
+	NativeConfigKey              string
+	WebConfigSecretName          string
+	WebConfigMountDirectory      string
 	HPCJobMappingDir             string
 	HostPID                      bool
 	HostNetwork                  bool

@@ -29,6 +29,7 @@ import (
 const (
 	metricsListenEnvName     = "DCGM_EXPORTER_LISTEN"
 	metricsCollectorsEnvName = "DCGM_EXPORTER_COLLECTORS"
+	webConfigFileEnvName     = "DCGM_EXPORTER_WEB_CONFIG_FILE"
 )
 
 var kubernetesEnvExpansion = regexp.MustCompile(`\$\([A-Za-z_][A-Za-z0-9_]*\)`)
@@ -64,10 +65,21 @@ func ValidateUserOverrides(args []string, env []gpuv1.EnvVar) error {
 		return err
 	}
 	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "--a", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-"), metricsPort) {
-		return fmt.Errorf("%s sets metrics listener %q, which does not match the Operator-managed container port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
+		return fmt.Errorf("%s sets metrics listener %q, which conflicts with the Operator Service because it does not match the Operator-managed container port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
 	}
 	if value, source, explicit := effectiveStringOption(args, env, metricsCollectorsEnvName, "--collectors", "-collectors", "--f", "-f"); explicit && value == oldMetricsFilePath {
 		return fmt.Errorf("%s selects the former custom metrics path %q; use %q", source, oldMetricsFilePath, CustomMetricsFilePath)
+	}
+	return nil
+}
+
+// ValidateWebConfigOverride keeps explicit legacy web-config options aligned with a projected Secret.
+func ValidateWebConfigOverride(args []string, env []gpuv1.EnvVar, selectedPath string) error {
+	if selectedPath == "" {
+		return nil
+	}
+	if value, source, explicit := effectiveStringOption(args, env, webConfigFileEnvName, "--web-config-file", "-web-config-file"); explicit && value != selectedPath {
+		return fmt.Errorf("%s selects web config file %q, but dcgmExporter.webConfig projects %q", source, value, selectedPath)
 	}
 	return nil
 }

@@ -565,6 +565,20 @@ spec:
     config:
       name: {{ .Values.dcgmExporter.config.name }}
     {{- end }}
+    {{- with (.Values.dcgmExporter.nativeConfig | default dict) }}
+    {{- if or .name .key }}
+    nativeConfig:
+      name: {{ required "dcgmExporter.nativeConfig.name is required when nativeConfig is set" .name | quote }}
+      key: {{ required "dcgmExporter.nativeConfig.key is required when nativeConfig is set" .key | quote }}
+    {{- end }}
+    {{- end }}
+    {{- with (.Values.dcgmExporter.webConfig | default dict) }}
+    {{- if or .name .key }}
+    webConfig:
+      name: {{ required "dcgmExporter.webConfig.name is required when webConfig is set" .name | quote }}
+      key: {{ required "dcgmExporter.webConfig.key is required when webConfig is set" .key | quote }}
+    {{- end }}
+    {{- end }}
     {{- if .Values.dcgmExporter.serviceMonitor }}
     serviceMonitor: {{ toYaml .Values.dcgmExporter.serviceMonitor | nindent 6 }}
     {{- end }}

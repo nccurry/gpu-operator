@@ -18,6 +18,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"path/filepath"
 
@@ -102,22 +103,49 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	}
 
 	configOptions := dcgmexporter.ConfigOptionsFromSpec(spec, remoteHostEngine, spec.IsHostNetworkEnabled(), true)
+	if err := dcgmexporter.ValidateWebConfigOverride(spec.Args, spec.Env, configOptions.WebConfigFilePath); err != nil {
+		return nil, err
+	}
+	webConfig, err := dcgmexporter.ResolveWebConfig(ctx, s.client, s.namespace, spec.WebConfig)
+	if err != nil {
+		return nil, err
+	}
+	var nativeConfig *dcgmexporter.NativeConfigReference
+	if spec.NativeConfig != nil {
+		nativeOptions := dcgmexporter.NativeConfigOptions{
+			HostNetwork:       configOptions.HostNetwork,
+			DRA:               true,
+			MetricsConfigName: metricsConfigName,
+			HPCJobMappingDir:  configOptions.HPCJobMappingDir,
+			WebConfigFilePath: configOptions.WebConfigFilePath,
+		}
+		nativeConfig, err = dcgmexporter.ResolveNativeConfig(ctx, s.client, s.namespace, spec.NativeConfig, nativeOptions)
+		if err != nil {
+			return nil, err
+		}
+		configOptions.HostNetwork = nativeConfig.Features.HostNetwork
+	}
 	containerDefaults := &corev1.Container{}
 	if err := dcgmexporter.ApplyDeploymentDefaults(containerDefaults, configOptions.HostNetwork); err != nil {
 		return nil, err
 	}
-	exporterConfig, err := dcgmexporter.RenderConfig(configOptions)
+	generatedConfig, err := dcgmexporter.RenderConfig(configOptions)
 	if err != nil {
 		return nil, err
 	}
-
 	podAnnotations := make(map[string]string, len(cr.Spec.Daemonsets.Annotations)+len(spec.Annotations)+1)
 	maps.Copy(podAnnotations, cr.Spec.Daemonsets.Annotations)
 	maps.Copy(podAnnotations, spec.Annotations)
-	if err := dcgmexporter.ValidateConfigAnnotation(exporterConfig, podAnnotations); err != nil {
-		return nil, err
+	if nativeConfig != nil {
+		if _, exists := podAnnotations[dcgmexporter.ConfigAnnotation]; exists {
+			return nil, fmt.Errorf("pod template annotation %q is reserved for the generated dcgm-exporter configuration", dcgmexporter.ConfigAnnotation)
+		}
+	} else {
+		if err := dcgmexporter.ValidateConfigAnnotation(generatedConfig, podAnnotations); err != nil {
+			return nil, err
+		}
+		podAnnotations[dcgmexporter.ConfigAnnotation] = string(generatedConfig)
 	}
-	podAnnotations[dcgmexporter.ConfigAnnotation] = string(exporterConfig)
 
 	serviceType := "ClusterIP"
 	serviceInternalTrafficPolicy := ""
@@ -131,7 +159,7 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	}
 
 	daemonsets := cr.Spec.Daemonsets
-	return &dcgmExporterRenderData{
+	renderData := &dcgmExporterRenderData{
 		DCGMExporter:                 &dcgmExporterSpec{Spec: spec, ImagePath: imagePath},
 		Daemonsets:                   &daemonsets,
 		Namespace:                    s.namespace,
@@ -154,7 +182,16 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		PodResourcesDir:              filepath.Join(kubeletRootDir, "pod-resources"),
 		ServiceType:                  serviceType,
 		ServiceInternalTrafficPolicy: serviceInternalTrafficPolicy,
-	}, nil
+	}
+	if nativeConfig != nil {
+		renderData.NativeConfigName = nativeConfig.Name
+		renderData.NativeConfigKey = nativeConfig.Key
+	}
+	if webConfig != nil {
+		renderData.WebConfigSecretName = webConfig.Name
+		renderData.WebConfigMountDirectory = dcgmexporter.WebConfigDirectory
+	}
+	return renderData, nil
 }
 
 // serviceMonitorCRDServed reports whether the cluster serves the monitoring.coreos.com

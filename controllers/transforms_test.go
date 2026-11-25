@@ -17,6 +17,7 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
@@ -31,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -2347,6 +2349,149 @@ func findVolumeMount(t *testing.T, mounts []corev1.VolumeMount, name string) cor
 	}
 	t.Fatalf("volume mount %q not found", name)
 	return corev1.VolumeMount{}
+}
+
+func TestTransformDCGMExporterNativeConfigAndWebConfig(t *testing.T) {
+	spec := gpuv1.DCGMExporterSpec{
+		Repository:   "nvcr.io/nvidia/cloud-native",
+		Image:        "dcgm-exporter",
+		Version:      "v4.10.0",
+		EnablePodUID: new(true),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-config-v1"},
+			Key:                  "custom-exporter.yaml",
+		},
+		WebConfig: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-web-v1"},
+			Key:                  "web-config.yaml",
+		},
+	}
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptionsFromSpec(&spec, "", false, false))
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: spec.NativeConfig.Name, Namespace: "operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{spec.NativeConfig.Key: string(configBytes)},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: spec.WebConfig.Name, Namespace: "operator"},
+		Data: map[string][]byte{
+			spec.WebConfig.Key: []byte("web settings"),
+			"tls.crt":          []byte("certificate"),
+			"tls.key":          []byte("private key"),
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap, secret).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		operatorNamespace: "operator",
+		logger:            ctrl.Log.WithName("test"),
+		runtime:           gpuv1.Containerd,
+	}
+	daemonSet := NewDaemonset().WithContainer(corev1.Container{
+		Name: "dcgm-exporter",
+		Env:  []corev1.EnvVar{{Name: "CUSTOM_SETTING", Value: "kept"}},
+	}).DaemonSet
+	clusterPolicySpec := &gpuv1.ClusterPolicySpec{DCGMExporter: spec}
+
+	require.NoError(t, TransformDCGMExporter(daemonSet, clusterPolicySpec, controller))
+
+	podSpec := daemonSet.Spec.Template.Spec
+	var configVolume *corev1.Volume
+	for index := range podSpec.Volumes {
+		if podSpec.Volumes[index].Name == dcgmexporter.ConfigVolumeName {
+			configVolume = &podSpec.Volumes[index]
+			break
+		}
+	}
+	require.NotNil(t, configVolume)
+	require.NotNil(t, configVolume.ConfigMap)
+	assert.Equal(t, spec.NativeConfig.Name, configVolume.ConfigMap.Name)
+	require.Len(t, configVolume.ConfigMap.Items, 1)
+	assert.Equal(t, spec.NativeConfig.Key, configVolume.ConfigMap.Items[0].Key)
+	assert.Equal(t, dcgmexporter.ConfigFileName, configVolume.ConfigMap.Items[0].Path)
+	assert.NotContains(t, daemonSet.Spec.Template.Annotations, dcgmexporter.ConfigAnnotation)
+	require.NotNil(t, podSpec.AutomountServiceAccountToken)
+	assert.True(t, *podSpec.AutomountServiceAccountToken)
+
+	container := podSpec.Containers[0]
+	env := make(map[string]string)
+	for _, variable := range container.Env {
+		env[variable.Name] = variable.Value
+	}
+	assert.Equal(t, "kept", env["CUSTOM_SETTING"])
+	assert.Equal(t, dcgmexporter.ConfigFilePath, env[dcgmexporter.ConfigFileEnvName])
+
+	var webVolume *corev1.Volume
+	for index := range podSpec.Volumes {
+		if podSpec.Volumes[index].Name == dcgmexporter.WebConfigVolumeName {
+			webVolume = &podSpec.Volumes[index]
+			break
+		}
+	}
+	require.NotNil(t, webVolume)
+	require.NotNil(t, webVolume.Secret)
+	assert.Equal(t, spec.WebConfig.Name, webVolume.Secret.SecretName)
+	require.NotNil(t, webVolume.Secret.DefaultMode)
+	assert.Equal(t, int32(0440), *webVolume.Secret.DefaultMode)
+	assert.Nil(t, webVolume.Secret.Items)
+	assert.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name:      dcgmexporter.WebConfigVolumeName,
+		ReadOnly:  true,
+		MountPath: dcgmexporter.WebConfigDirectory,
+	})
+}
+
+func TestTransformDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{HostEngine: "localhost:5555", HostNetwork: true})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "loopback-config", Namespace: "operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		operatorNamespace: "operator",
+		logger:            ctrl.Log.WithName("test"),
+		runtime:           gpuv1.Containerd,
+	}
+	spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+		Repository:  "nvcr.io/nvidia/cloud-native",
+		Image:       "dcgm-exporter",
+		Version:     "v4.10.0",
+		HostNetwork: newBoolPtr(false),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+			Key:                  "exporter.yaml",
+		},
+	}}
+	newDaemonSet := func() *appsv1.DaemonSet {
+		return NewDaemonset().WithContainer(corev1.Container{
+			Name:           "dcgm-exporter",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{}}},
+		}).DaemonSet
+	}
+
+	withoutOptIn := newDaemonSet()
+	err = TransformDCGMExporter(withoutOptIn, spec, controller)
+	require.ErrorContains(t, err, "set dcgmExporter.hostNetwork=true")
+	assert.False(t, withoutOptIn.Spec.Template.Spec.HostNetwork)
+
+	spec.DCGMExporter.HostNetwork = newBoolPtr(true)
+	withOptIn := newDaemonSet()
+	require.NoError(t, TransformDCGMExporter(withOptIn, spec, controller))
+	assert.True(t, withOptIn.Spec.Template.Spec.HostNetwork)
+	assert.Equal(t, "127.0.0.1", withOptIn.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Host)
 }
 
 func TestTransformDCGM(t *testing.T) {
