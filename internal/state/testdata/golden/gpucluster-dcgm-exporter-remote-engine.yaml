@@ -109,7 +109,7 @@ spec:
   - name: gpu-metrics
     port: 9400
     protocol: TCP
-    targetPort: 9400
+    targetPort: metrics
   selector:
     app: nvidia-dcgm-exporter-dra
   type: ClusterIP
@@ -128,6 +128,30 @@ spec:
       app: nvidia-dcgm-exporter-dra
   template:
     metadata:
+      annotations:
+        nvidia.com/dcgm-exporter-config: |
+          metrics:
+          - enrichment:
+              container: false
+              dra: auto
+              hpc_jobs: false
+              kubernetes: auto
+            every: 30s
+            file: /etc/dcgm-exporter/default-counters.csv
+            name: default
+          outputs:
+            prometheus:
+              listen: :9400
+              schema: dcgm/v1
+              type: prometheus
+          server:
+            listen_health: :9401
+          sources:
+            dcgm:
+              hostengine: nvidia-dcgm-dra:5555
+            dra:
+              mode: kubernetes
+          version: 2
       labels:
         app: nvidia-dcgm-exporter-dra
         app.kubernetes.io/component: nvidia-dcgm-exporter
@@ -135,34 +159,32 @@ spec:
       automountServiceAccountToken: true
       containers:
       - env:
-        - name: DCGM_EXPORTER_LISTEN
-          value: :9400
-        - name: DCGM_EXPORTER_KUBERNETES
-          value: "true"
-        - name: DCGM_EXPORTER_COLLECTORS
-          value: /etc/dcgm-exporter/default-counters.csv
         - name: NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        - name: DCGM_REMOTE_HOSTENGINE_INFO
-          value: nvidia-dcgm-dra:5555
-        - name: KUBERNETES_ENABLE_DRA
-          value: "true"
+        - name: DCGM_EXPORTER_CONFIG_FILE
+          value: /etc/dcgm-exporter/operator/config/dcgm-exporter.yaml
         image: nvcr.io/nvidia/k8s/dcgm-exporter:test
         livenessProbe:
           httpGet:
-            path: /health
-            port: 9400
+            path: /healthz
+            port: health
+            scheme: HTTP
           periodSeconds: 5
         name: nvidia-dcgm-exporter-dra
         ports:
         - containerPort: 9400
           name: metrics
+          protocol: TCP
+        - containerPort: 9401
+          name: health
+          protocol: TCP
         readinessProbe:
           httpGet:
-            path: /health
-            port: 9400
+            path: /readyz
+            port: health
+            scheme: HTTP
         resources:
           claims:
           - name: admin-gpus
@@ -171,10 +193,14 @@ spec:
         startupProbe:
           failureThreshold: 60
           httpGet:
-            path: /health
-            port: 9400
+            path: /healthz
+            port: health
+            scheme: HTTP
           periodSeconds: 5
         volumeMounts:
+        - mountPath: /etc/dcgm-exporter/operator/config
+          name: dcgm-exporter-config
+          readOnly: true
         - mountPath: /var/lib/kubelet/pod-resources
           name: pod-gpu-resources
           readOnly: true
@@ -190,6 +216,12 @@ spec:
         key: nvidia.com/gpu
         operator: Exists
       volumes:
+      - downwardAPI:
+          items:
+          - fieldRef:
+              fieldPath: metadata.annotations['nvidia.com/dcgm-exporter-config']
+            path: dcgm-exporter.yaml
+        name: dcgm-exporter-config
       - hostPath:
           path: /var/lib/kubelet/pod-resources
         name: pod-gpu-resources

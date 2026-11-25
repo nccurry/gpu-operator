@@ -19,10 +19,11 @@ package state
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +32,7 @@ import (
 	nvidiav1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	nvidiav1alpha1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1alpha1"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 	"github.com/NVIDIA/gpu-operator/internal/utils"
 )
 
@@ -43,10 +45,7 @@ const (
 	// hostengine Service (manifests/state-dcgm/0600_service.yaml).
 	dcgmRemoteHostEngine = "nvidia-dcgm-dra:5555"
 
-	dcgmExporterDefaultCollectors     = "/etc/dcgm-exporter/default-counters.csv"
-	dcgmExporterCustomCollectors      = "/etc/dcgm-exporter/dcgm-metrics.csv"
 	dcgmExporterDefaultKubeletRootDir = "/var/lib/kubelet"
-	dcgmExporterDefaultJobMappingDir  = "/var/lib/dcgm-exporter/job-mapping"
 )
 
 func NewStateDCGMExporter(
@@ -76,6 +75,9 @@ func NewStateDCGMExporter(
 
 func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *nvidiav1alpha1.GPUCluster, imagePath, apiVersion, openshiftVersion string) (any, error) {
 	spec := cr.Spec.DCGMExporter
+	if err := dcgmexporter.ValidateUserOverrides(spec.Args, spec.Env); err != nil {
+		return nil, err
+	}
 
 	// When standalone DCGM is enabled the exporter targets it; otherwise it runs embedded.
 	remoteHostEngine := ""
@@ -83,19 +85,9 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		remoteHostEngine = dcgmRemoteHostEngine
 	}
 
-	collectors := dcgmExporterDefaultCollectors
 	metricsConfigName := ""
 	if spec.MetricsConfig != nil && spec.MetricsConfig.Name != "" {
 		metricsConfigName = spec.MetricsConfig.Name
-		collectors = dcgmExporterCustomCollectors
-	}
-
-	hpcJobMappingDir := ""
-	if spec.IsHPCJobMappingEnabled() {
-		hpcJobMappingDir = spec.GetHPCJobMappingDirectory()
-		if hpcJobMappingDir == "" {
-			hpcJobMappingDir = dcgmExporterDefaultJobMappingDir
-		}
 	}
 
 	kubeletRootDir := cr.Spec.HostPaths.KubeletRootDir
@@ -111,6 +103,51 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		log.FromContext(ctx).V(consts.LogLevelInfo).Info(
 			"ServiceMonitor CRD not served; skipping dcgm-exporter ServiceMonitor creation")
 		serviceMonitorEnabled = false
+	}
+
+	configOptions := dcgmexporter.ConfigOptionsFromSpec(spec, remoteHostEngine, spec.IsHostNetworkEnabled(), true)
+	if err := dcgmexporter.ValidateWebConfigOverride(spec.Args, spec.Env, configOptions.WebConfigFilePath); err != nil {
+		return nil, err
+	}
+	webConfig, err := dcgmexporter.ResolveWebConfig(ctx, s.client, s.namespace, spec.WebConfig)
+	if err != nil {
+		return nil, err
+	}
+	var nativeConfig *dcgmexporter.NativeConfigReference
+	if spec.NativeConfig != nil {
+		nativeOptions := dcgmexporter.NativeConfigOptions{
+			HostNetwork:       configOptions.HostNetwork,
+			DRA:               true,
+			MetricsConfigName: metricsConfigName,
+			HPCJobMappingDir:  configOptions.HPCJobMappingDir,
+			WebConfigFilePath: configOptions.WebConfigFilePath,
+		}
+		nativeConfig, err = dcgmexporter.ResolveNativeConfig(ctx, s.client, s.namespace, spec.NativeConfig, nativeOptions)
+		if err != nil {
+			return nil, err
+		}
+		configOptions.HostNetwork = nativeConfig.Features.HostNetwork
+	}
+	containerDefaults := &corev1.Container{}
+	if err := dcgmexporter.ApplyDeploymentDefaults(containerDefaults, configOptions.HostNetwork); err != nil {
+		return nil, err
+	}
+	generatedConfig, err := dcgmexporter.RenderConfig(configOptions)
+	if err != nil {
+		return nil, err
+	}
+	podAnnotations := make(map[string]string, len(cr.Spec.Daemonsets.Annotations)+len(spec.Annotations)+1)
+	maps.Copy(podAnnotations, cr.Spec.Daemonsets.Annotations)
+	maps.Copy(podAnnotations, spec.Annotations)
+	if nativeConfig != nil {
+		if _, exists := podAnnotations[dcgmexporter.ConfigAnnotation]; exists {
+			return nil, fmt.Errorf("pod template annotation %q is reserved for the generated dcgm-exporter configuration", dcgmexporter.ConfigAnnotation)
+		}
+	} else {
+		if err := dcgmexporter.ValidateConfigAnnotation(generatedConfig, podAnnotations); err != nil {
+			return nil, err
+		}
+		podAnnotations[dcgmexporter.ConfigAnnotation] = string(generatedConfig)
 	}
 
 	serviceType := "ClusterIP"
@@ -129,27 +166,40 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	if err != nil {
 		return nil, err
 	}
-	return &dcgmExporterRenderData{
+	renderData := &dcgmExporterRenderData{
 		DCGMExporter:                 &dcgmExporterSpec{Spec: spec, ImagePath: imagePath},
 		Daemonsets:                   &daemonsets,
 		UpdateStrategy:               updateStrategy,
 		Namespace:                    s.namespace,
 		OpenshiftVersion:             openshiftVersion,
 		ResourceClaimAPIVersion:      apiVersion,
-		RemoteHostEngine:             remoteHostEngine,
-		Collectors:                   collectors,
-		HPCJobMappingDir:             hpcJobMappingDir,
-		PodLabelAllowlistRegex:       strings.Join(spec.PodLabelAllowlistRegex, ","),
-		EnablePodLabels:              spec.IsPodLabelsEnabled(),
-		EnablePodUID:                 spec.IsPodUIDEnabled(),
+		ConfigFileEnvName:            dcgmexporter.ConfigFileEnvName,
+		ConfigFileDirectory:          dcgmexporter.ConfigFileDirectory,
+		ConfigFileName:               dcgmexporter.ConfigFileName,
+		ConfigFilePath:               dcgmexporter.ConfigFilePath,
+		ConfigVolumeName:             dcgmexporter.ConfigVolumeName,
+		ConfigAnnotation:             dcgmexporter.ConfigAnnotation,
+		PodAnnotations:               podAnnotations,
+		HPCJobMappingDir:             configOptions.HPCJobMappingDir,
 		HostPID:                      spec.IsHostPIDEnabled(),
-		HostNetwork:                  spec.IsHostNetworkEnabled(),
+		HostNetwork:                  configOptions.HostNetwork,
 		MetricsConfigName:            metricsConfigName,
+		MetricsConfigMountDirectory:  filepath.Dir(dcgmexporter.CustomMetricsFilePath),
+		ContainerDefaults:            containerDefaults,
 		ServiceMonitorEnabled:        serviceMonitorEnabled,
 		PodResourcesDir:              filepath.Join(kubeletRootDir, "pod-resources"),
 		ServiceType:                  serviceType,
 		ServiceInternalTrafficPolicy: serviceInternalTrafficPolicy,
-	}, nil
+	}
+	if nativeConfig != nil {
+		renderData.NativeConfigName = nativeConfig.Name
+		renderData.NativeConfigKey = nativeConfig.Key
+	}
+	if webConfig != nil {
+		renderData.WebConfigSecretName = webConfig.Name
+		renderData.WebConfigMountDirectory = dcgmexporter.WebConfigDirectory
+	}
+	return renderData, nil
 }
 
 func dcgmExporterUpdateStrategy(daemonsets *nvidiav1.DaemonsetsSpec) (appsv1.DaemonSetUpdateStrategy, error) {

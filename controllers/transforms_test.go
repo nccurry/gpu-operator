@@ -17,6 +17,8 @@
 package controllers
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -30,6 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,6 +43,7 @@ import (
 	gpuv1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	driverconfig "github.com/NVIDIA/gpu-operator/internal/config"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 	"github.com/NVIDIA/gpu-operator/internal/utils"
 )
 
@@ -1433,6 +1437,75 @@ func TestTransformMPSControlDaemon(t *testing.T) {
 	}
 }
 
+func TestDCGMExporterCollectorOverrides(t *testing.T) {
+	spec := &gpuv1.ClusterPolicySpec{
+		DCGMExporter: gpuv1.DCGMExporterSpec{
+			Repository:    "nvcr.io/nvidia/k8s",
+			Image:         "dcgm-exporter",
+			Version:       "4.9.0",
+			MetricsConfig: &gpuv1.DCGMExporterMetricsConfig{Name: "counters"},
+			Args:          []string{"--collectors=/user/flags.csv"},
+			Env:           []gpuv1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"}},
+		},
+	}
+	ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+	err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+	require.NoError(t, err)
+	container := ds.Spec.Template.Spec.Containers[0]
+	require.Equal(t, spec.DCGMExporter.Args, container.Args)
+	require.Contains(t, container.Env, corev1.EnvVar{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name: "metrics-config", ReadOnly: true, MountPath: "/etc/dcgm-exporter/operator/metrics",
+	})
+}
+
+func TestTransformDCGMExporterSecurityContext(t *testing.T) {
+	privileged := true
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := true
+	runAsNonRoot := true
+	securityContext := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+		RunAsNonRoot:             &runAsNonRoot,
+	}
+	testCases := map[string]struct {
+		configured *corev1.SecurityContext
+		want       *corev1.SecurityContext
+	}{
+		"keeps the privileged default when unset": {
+			want: &corev1.SecurityContext{Privileged: &privileged},
+		},
+		"replaces the container context when configured": {
+			configured: securityContext,
+			want:       securityContext,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			daemonset := NewDaemonset().WithContainer(corev1.Container{
+				Name:            "dcgm-exporter",
+				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+			})
+			config := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository:      "nvcr.io/nvidia/cloud-native",
+				Image:           "dcgm-exporter",
+				Version:         "4.10.0",
+				SecurityContext: tc.configured,
+			}}
+
+			err := TransformDCGMExporter(daemonset.DaemonSet, config, ClusterPolicyController{
+				runtime: gpuv1.Containerd,
+				logger:  ctrl.Log.WithName("test"),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, daemonset.Spec.Template.Spec.Containers[0].SecurityContext)
+		})
+	}
+}
+
 func TestTransformDCGMExporter(t *testing.T) {
 	testCases := []struct {
 		description      string
@@ -1444,7 +1517,13 @@ func TestTransformDCGMExporter(t *testing.T) {
 		{
 			description: "transform dcgm exporter",
 			ds: NewDaemonset().
-				WithContainer(corev1.Container{Name: "dcgm-exporter"}).
+				WithContainer(corev1.Container{
+					Name: "dcgm-exporter",
+					Env: []corev1.EnvVar{{
+						Name:  "DCGM_EXPORTER_COLLECTORS",
+						Value: "/etc/dcgm-exporter/default-counters.csv",
+					}},
+				}).
 				WithContainer(corev1.Container{Name: "dummy"}).
 				WithHostPathVolume("pod-resources", "/var/lib/kubelet/pod-resources", nil),
 			cpSpec: &gpuv1.ClusterPolicySpec{
@@ -1469,6 +1548,7 @@ func TestTransformDCGMExporter(t *testing.T) {
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Args:            []string{"--fail-on-init-error=false"},
 				Env: []corev1.EnvVar{
+					{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/etc/dcgm-exporter/default-counters.csv"},
 					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
 					{Name: "foo", Value: "bar"},
 				},
@@ -1568,8 +1648,8 @@ func TestTransformDCGMExporter(t *testing.T) {
 				ImagePullPolicy: corev1.PullIfNotPresent,
 				Args:            []string{"--fail-on-init-error=false"},
 				Env: []corev1.EnvVar{
-					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
 					{Name: "foo", Value: "bar"},
+					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
 				},
 			}).WithContainer(corev1.Container{Name: "dummy"}).WithPullSecret("pull-secret").WithRuntimeClassName("nvidia").WithHostNetwork(true).WithDNSPolicy(corev1.DNSClusterFirstWithHostNet),
 		},
@@ -1631,7 +1711,7 @@ func TestTransformDCGMExporter(t *testing.T) {
 					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "localhost:5555"},
 					{Name: "foo", Value: "bar"},
 				},
-			}).WithContainer(corev1.Container{Name: "dummy"}).WithPullSecret("pull-secret").WithRuntimeClassName("nvidia").WithHostNetwork(false),
+			}).WithContainer(corev1.Container{Name: "dummy"}).WithPullSecret("pull-secret").WithRuntimeClassName("nvidia").WithHostNetwork(true).WithDNSPolicy(corev1.DNSClusterFirstWithHostNet),
 		},
 		{
 			description: "transform dcgm exporter with dcgm running on the host itself(DGX BaseOS)",
@@ -1900,6 +1980,41 @@ func TestTransformDCGMExporter(t *testing.T) {
 				WithAutomountServiceAccountToken(true),
 		},
 		{
+			description: "transform dcgm exporter with custom metrics config",
+			ds:          NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"}),
+			cpSpec: &gpuv1.ClusterPolicySpec{
+				DCGMExporter: gpuv1.DCGMExporterSpec{
+					Repository:      "nvcr.io/nvidia/cloud-native",
+					Image:           "dcgm-exporter",
+					Version:         "v1.0.0",
+					ImagePullPolicy: "IfNotPresent",
+					MetricsConfig:   &gpuv1.DCGMExporterMetricsConfig{Name: "custom-dcgm-exporter-metrics"},
+				},
+				DCGM: gpuv1.DCGMSpec{Enabled: newBoolPtr(true)},
+			},
+			expectedDs: NewDaemonset().WithContainer(corev1.Container{
+				Name:            "dcgm-exporter",
+				Image:           "nvcr.io/nvidia/cloud-native/dcgm-exporter:v1.0.0",
+				ImagePullPolicy: corev1.PullIfNotPresent,
+				Env: []corev1.EnvVar{
+					{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "nvidia-dcgm:5555"},
+				},
+				VolumeMounts: []corev1.VolumeMount{{
+					Name:      "metrics-config",
+					ReadOnly:  true,
+					MountPath: "/etc/dcgm-exporter/operator/metrics",
+				}},
+			}).WithRuntimeClassName("nvidia").WithVolume(corev1.Volume{
+				Name: "metrics-config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "custom-dcgm-exporter-metrics"},
+						Items:                []corev1.KeyToPath{{Key: "dcgm-metrics.csv", Path: "dcgm-metrics.csv"}},
+					},
+				},
+			}),
+		},
+		{
 			description: "transform dcgm exporter with configmap data env set to none",
 			ds: NewDaemonset().
 				WithContainer(corev1.Container{Name: "dcgm-exporter"}),
@@ -1962,56 +2077,468 @@ func TestTransformDCGMExporter(t *testing.T) {
 		t.Run(tc.description, func(t *testing.T) {
 			err := TransformDCGMExporter(tc.ds.DaemonSet, tc.cpSpec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test"), openshift: tc.openshiftVersion})
 			require.NoError(t, err)
-			require.EqualValues(t, tc.expectedDs.DaemonSet, tc.ds.DaemonSet)
+			expected := withGeneratedDCGMExporterConfig(t, tc.expectedDs.DaemonSet, tc.ds.DaemonSet, tc.cpSpec)
+			require.EqualValues(t, expected, tc.ds.DaemonSet)
 		})
 	}
 }
 
-func TestTransformDCGMExporterSecurityContext(t *testing.T) {
-	privileged := true
-	allowPrivilegeEscalation := false
-	readOnlyRootFilesystem := true
-	runAsNonRoot := true
-	securityContext := &corev1.SecurityContext{
-		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
-		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
-		RunAsNonRoot:             &runAsNonRoot,
+func withGeneratedDCGMExporterConfig(t *testing.T, expected, input *appsv1.DaemonSet, spec *gpuv1.ClusterPolicySpec) *appsv1.DaemonSet {
+	t.Helper()
+	expected = expected.DeepCopy()
+	container := &expected.Spec.Template.Spec.Containers[0]
+	inputContainer := input.Spec.Template.Spec.Containers[0]
+
+	// Remove legacy generated env expectations that are no longer emitted. Keep
+	// settings explicitly supplied in the source DaemonSet or ClusterPolicy.
+	userEnv := make(map[string]struct{}, len(inputContainer.Env)+len(spec.DCGMExporter.Env))
+	for _, env := range inputContainer.Env {
+		userEnv[env.Name] = struct{}{}
 	}
-	testCases := map[string]struct {
-		configured *corev1.SecurityContext
-		want       *corev1.SecurityContext
+	for _, env := range spec.DCGMExporter.Env {
+		userEnv[env.Name] = struct{}{}
+	}
+	generatedEnv := map[string]struct{}{
+		"DCGM_REMOTE_HOSTENGINE_INFO":                        {},
+		"DCGM_HPC_JOB_MAPPING_DIR":                           {},
+		DCGMExporterPodLabelsEnvName:                         {},
+		DCGMExporterPodUIDEnvName:                            {},
+		"DCGM_EXPORTER_KUBERNETES_POD_LABEL_ALLOWLIST_REGEX": {},
+	}
+	filteredEnv := container.Env[:0]
+	for _, env := range container.Env {
+		if _, generated := generatedEnv[env.Name]; generated {
+			if _, explicitlySet := userEnv[env.Name]; !explicitlySet {
+				continue
+			}
+		}
+		filteredEnv = append(filteredEnv, env)
+	}
+	container.Env = filteredEnv
+	container.Env = append(container.Env, corev1.EnvVar{Name: dcgmexporter.ConfigFileEnvName, Value: dcgmexporter.ConfigFilePath})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      dcgmexporter.ConfigVolumeName,
+		ReadOnly:  true,
+		MountPath: dcgmexporter.ConfigFileDirectory,
+	})
+
+	config, _, err := renderClusterPolicyDCGMExporterConfig(spec, spec.DCGMExporter.IsHostNetworkEnabled())
+	require.NoError(t, err)
+	if expected.Spec.Template.Annotations == nil {
+		expected.Spec.Template.Annotations = make(map[string]string)
+	}
+	expected.Spec.Template.Annotations[dcgmexporter.ConfigAnnotation] = string(config)
+	expected.Spec.Template.Spec.Volumes = append(expected.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: dcgmexporter.ConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{DownwardAPI: &corev1.DownwardAPIVolumeSource{
+			Items: []corev1.DownwardAPIVolumeFile{{
+				Path: dcgmexporter.ConfigFileName,
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.annotations['" + dcgmexporter.ConfigAnnotation + "']",
+				},
+			}},
+		}},
+	})
+	require.NoError(t, dcgmexporter.ApplyDeploymentDefaults(container, expected.Spec.Template.Spec.HostNetwork))
+	return expected
+}
+
+func TestTransformDCGMExporter410Config(t *testing.T) {
+	metricsPort, err := dcgmexporter.DefaultMetricsPort()
+	require.NoError(t, err)
+	healthPort, err := dcgmexporter.DefaultHealthPort()
+	require.NoError(t, err)
+	container := corev1.Container{
+		Name: "dcgm-exporter",
+		Env:  []corev1.EnvVar{{Name: "CUSTOM_SETTING", Value: "kept"}},
+		Args: []string{"--fail-on-init-error=false"},
+		Ports: []corev1.ContainerPort{
+			{Name: dcgmexporter.MetricsPortName, ContainerPort: metricsPort},
+			{Name: dcgmexporter.HealthPortName, ContainerPort: 1},
+		},
+		StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
+		LivenessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
+		ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/stale", Port: intstr.FromInt32(1)}}},
+	}
+	ds := NewDaemonset().WithContainer(container).WithHostPathVolume("pod-gpu-resources", "/var/lib/kubelet/pod-resources", nil)
+	spec := &gpuv1.ClusterPolicySpec{
+		DCGM: gpuv1.DCGMSpec{Enabled: newBoolPtr(true)},
+		DCGMExporter: gpuv1.DCGMExporterSpec{
+			Repository:             "nvcr.io/nvidia/k8s",
+			Image:                  "dcgm-exporter",
+			Version:                "4.10.0",
+			MetricsConfig:          &gpuv1.DCGMExporterMetricsConfig{Name: "nvidia-dcgm-exporter-config"},
+			HostNetwork:            newBoolPtr(false),
+			EnablePodLabels:        newBoolPtr(true),
+			EnablePodUID:           newBoolPtr(true),
+			PodLabelAllowlistRegex: []string{"^app$"},
+			HPCJobMapping: &gpuv1.DCGMExporterHPCJobMappingConfig{
+				Enabled:   newBoolPtr(true),
+				Directory: "/run/nvidia/dcgm-job-mapping",
+			},
+			Env: []gpuv1.EnvVar{{Name: "DCGM_REMOTE_HOSTENGINE_INFO", Value: "localhost:5555"}},
+		},
+	}
+
+	err = TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+	require.NoError(t, err)
+
+	main := &ds.Spec.Template.Spec.Containers[0]
+	require.Equal(t, []string{"--fail-on-init-error=false"}, main.Args)
+	assert.Equal(t, "kept", getContainerEnv(main, "CUSTOM_SETTING"))
+	assert.Equal(t, dcgmexporter.ConfigFilePath, getContainerEnv(main, dcgmexporter.ConfigFileEnvName))
+	assert.True(t, ds.Spec.Template.Spec.AutomountServiceAccountToken != nil && *ds.Spec.Template.Spec.AutomountServiceAccountToken)
+	assert.True(t, ds.Spec.Template.Spec.HostNetwork)
+	assert.Equal(t, corev1.DNSClusterFirstWithHostNet, ds.Spec.Template.Spec.DNSPolicy)
+	assert.Equal(t, metricsPort, main.Ports[0].ContainerPort)
+	assert.Equal(t, healthPort, main.Ports[1].ContainerPort)
+	defaults, err := dcgmexporter.DefaultDeploymentDefaults()
+	require.NoError(t, err)
+	for _, probe := range []*corev1.Probe{main.StartupProbe, main.LivenessProbe, main.ReadinessProbe} {
+		require.NotNil(t, probe.HTTPGet)
+		assert.Equal(t, "127.0.0.1", probe.HTTPGet.Host)
+		assert.Equal(t, dcgmexporter.HealthPortName, probe.HTTPGet.Port.String())
+	}
+	for _, pair := range []struct {
+		got  *corev1.Probe
+		want *corev1.Probe
 	}{
-		"keeps the privileged default when unset": {
-			want: &corev1.SecurityContext{Privileged: &privileged},
-		},
-		"replaces the container context when configured": {
-			configured: securityContext,
-			want:       securityContext,
-		},
+		{got: main.StartupProbe, want: defaults.StartupProbe},
+		{got: main.LivenessProbe, want: defaults.LivenessProbe},
+		{got: main.ReadinessProbe, want: defaults.ReadinessProbe},
+	} {
+		want := pair.want.DeepCopy()
+		want.HTTPGet.Host = "127.0.0.1"
+		want.HTTPGet.Port = intstr.FromString(dcgmexporter.HealthPortName)
+		assert.Equal(t, want, pair.got)
 	}
 
-	for name, tc := range testCases {
-		t.Run(name, func(t *testing.T) {
-			daemonset := NewDaemonset().WithContainer(corev1.Container{
-				Name:            "dcgm-exporter",
-				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
-			})
-			config := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
-				Repository:      "nvcr.io/nvidia/cloud-native",
-				Image:           "dcgm-exporter",
-				Version:         "4.10.0",
-				SecurityContext: tc.configured,
-			}}
+	configVolume := findVolume(t, ds.Spec.Template.Spec.Volumes, dcgmexporter.ConfigVolumeName)
+	require.NotNil(t, configVolume.DownwardAPI)
+	require.Len(t, configVolume.DownwardAPI.Items, 1)
+	assert.Equal(t, dcgmexporter.ConfigFileName, configVolume.DownwardAPI.Items[0].Path)
+	require.NotNil(t, configVolume.DownwardAPI.Items[0].FieldRef)
+	assert.Equal(t, "metadata.annotations['"+dcgmexporter.ConfigAnnotation+"']", configVolume.DownwardAPI.Items[0].FieldRef.FieldPath)
+	assert.Contains(t, main.VolumeMounts, corev1.VolumeMount{Name: dcgmexporter.ConfigVolumeName, ReadOnly: true, MountPath: dcgmexporter.ConfigFileDirectory})
+	csvMount := findVolumeMount(t, main.VolumeMounts, "metrics-config")
+	assert.Equal(t, filepath.Dir(dcgmexporter.CustomMetricsFilePath), csvMount.MountPath)
+	assert.Empty(t, csvMount.SubPath)
+	metricsConfigVolume := findVolume(t, ds.Spec.Template.Spec.Volumes, "metrics-config")
+	require.NotNil(t, metricsConfigVolume.ConfigMap)
+	assert.Equal(t, "nvidia-dcgm-exporter-config", metricsConfigVolume.ConfigMap.Name)
+	assert.Equal(t, "/run/nvidia/dcgm-job-mapping", findVolumeMount(t, main.VolumeMounts, "hpc-job-mapping").MountPath)
 
-			err := TransformDCGMExporter(daemonset.DaemonSet, config, ClusterPolicyController{
-				runtime: gpuv1.Containerd,
-				logger:  ctrl.Log.WithName("test"),
-			})
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, daemonset.Spec.Template.Spec.Containers[0].SecurityContext)
+	configBytes, options, err := renderClusterPolicyDCGMExporterConfig(spec, false)
+	require.NoError(t, err)
+	assert.Equal(t, dcgmexporter.CustomMetricsFilePath, options.MetricsFilePath)
+	assert.Equal(t, string(configBytes), ds.Spec.Template.Annotations[dcgmexporter.ConfigAnnotation])
+	assert.NotContains(t, ds.Spec.Template.Annotations, "nvidia.com/dcgm-exporter-config-hash")
+	var rendered map[string]any
+	require.NoError(t, yaml.Unmarshal(configBytes, &rendered))
+	assert.Equal(t, fmt.Sprintf("127.0.0.1:%d", healthPort), rendered["server"].(map[string]any)["listen_health"])
+	assert.Equal(t, "nvidia-dcgm:5555", rendered["sources"].(map[string]any)["dcgm"].(map[string]any)["hostengine"])
+
+	for _, env := range main.Env {
+		assert.NotContains(t, env.Name, "KUBERNETES_ENABLE_POD")
+		assert.NotEqual(t, "DCGM_HPC_JOB_MAPPING_DIR", env.Name)
+	}
+}
+
+func TestTransformDCGMExporterServiceUsesNamedMetricsTarget(t *testing.T) {
+	service := &corev1.Service{Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{
+		Name:       "gpu-metrics",
+		Port:       9400,
+		TargetPort: intstr.FromInt32(1),
+	}}}}
+
+	require.NoError(t, TransformDCGMExporterService(service, &gpuv1.ClusterPolicySpec{}))
+	require.Len(t, service.Spec.Ports, 1)
+	assert.Equal(t, "gpu-metrics", service.Spec.Ports[0].Name)
+	assert.Equal(t, int32(9400), service.Spec.Ports[0].Port)
+	assert.Equal(t, intstr.FromString(dcgmexporter.MetricsPortName), service.Spec.Ports[0].TargetPort)
+}
+
+func TestTransformDCGMExporter410RejectsUnsafeOverrides(t *testing.T) {
+	metricsPort, err := dcgmexporter.DefaultMetricsPort()
+	require.NoError(t, err)
+	for _, test := range []struct {
+		name string
+		args []string
+		env  []gpuv1.EnvVar
+		want string
+	}{
+		{name: "config file flag", args: []string{"--config-file", "/tmp/custom.yaml"}, want: "selects a separate config file"},
+		{name: "empty config file env", env: []gpuv1.EnvVar{{Name: dcgmexporter.ConfigFileEnvName}}, want: "DCGM_EXPORTER_CONFIG_FILE"},
+		{name: "listener breaks service", args: []string{"--address", fmt.Sprintf("127.0.0.1:%d", metricsPort)}, want: "keep a wildcard listener"},
+		{name: "old custom CSV path", env: []gpuv1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/etc/dcgm-exporter/dcgm-metrics.csv"}}, want: "former custom metrics path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+			spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository: "nvcr.io/nvidia/k8s",
+				Image:      "dcgm-exporter",
+				Version:    "4.10.0",
+				Env:        test.env,
+				Args:       test.args,
+			}}
+			err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+			require.ErrorContains(t, err, test.want)
 		})
 	}
+
+	t.Run("no overrides accepted", func(t *testing.T) {
+		ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+		spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+			Repository: "nvcr.io/nvidia/k8s",
+			Image:      "dcgm-exporter",
+			Version:    "4.10.0",
+		}}
+		require.NoError(t, TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")}))
+	})
+}
+
+func TestTransformDCGMExporter410PassesKubernetesExpandedAddressToExporter(t *testing.T) {
+	ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+	spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+		Repository: "nvcr.io/nvidia/k8s",
+		Image:      "dcgm-exporter",
+		Version:    "4.10.0",
+		Args:       []string{"--address=$(EXPORTER_LISTEN_ADDRESS)"},
+	}}
+	require.NoError(t, TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")}))
+	assert.Equal(t, []string{"--address=$(EXPORTER_LISTEN_ADDRESS)"}, ds.Spec.Template.Spec.Containers[0].Args)
+}
+
+func TestTransformDCGMExporter410RejectsReservedOrOversizedAnnotations(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		annotations map[string]string
+		want        string
+	}{
+		{name: "reserved config key", annotations: map[string]string{dcgmexporter.ConfigAnnotation: "user-value"}, want: "reserved"},
+		{name: "annotation size limit", annotations: map[string]string{"user.example/config": strings.Repeat("x", 300*1024)}, want: "reduce exporter settings or other Pod annotations"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+			spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository:  "nvcr.io/nvidia/k8s",
+				Image:       "dcgm-exporter",
+				Version:     "4.10.0",
+				Annotations: test.annotations,
+			}}
+			err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+			require.ErrorContains(t, err, test.want)
+			assert.NotContains(t, err.Error(), "version: 2")
+		})
+	}
+}
+
+func TestPreProcessDCGMExporterDaemonSetGlobalAnnotations(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		global, exporter map[string]string
+		wantError        string
+	}{
+		{
+			name:      "global reserved key",
+			global:    map[string]string{dcgmexporter.ConfigAnnotation: "other"},
+			wantError: "reserved",
+		},
+		{
+			name:      "combined size exceeds limit",
+			global:    map[string]string{"example.com/global": strings.Repeat("x", 140*1024)},
+			exporter:  map[string]string{"example.com/local": strings.Repeat("x", 120*1024)},
+			wantError: "annotation limit",
+		},
+		{
+			name:     "global overrides local",
+			global:   map[string]string{"example.com/owner": "global"},
+			exporter: map[string]string{"example.com/owner": "local"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := NewDaemonset().WithName("nvidia-dcgm-exporter").WithContainer(corev1.Container{Name: "dcgm-exporter"})
+			policy := &gpuv1.ClusterPolicy{}
+			policy.Spec.Daemonsets.Annotations = tc.global
+			policy.Spec.DCGMExporter = gpuv1.DCGMExporterSpec{
+				Repository: "nvcr.io/nvidia/k8s", Image: "dcgm-exporter", Version: "4.10.0",
+				Annotations: tc.exporter,
+			}
+			err := preProcessDaemonSet(ds.DaemonSet, ClusterPolicyController{singleton: policy, runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "global", ds.Spec.Template.Annotations["example.com/owner"])
+			assert.NotEmpty(t, ds.Spec.Template.Annotations[dcgmexporter.ConfigAnnotation])
+		})
+	}
+}
+
+func findVolume(t *testing.T, volumes []corev1.Volume, name string) *corev1.Volume {
+	t.Helper()
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return &volumes[i]
+		}
+	}
+	t.Fatalf("volume %q not found", name)
+	return nil
+}
+
+func findVolumeMount(t *testing.T, mounts []corev1.VolumeMount, name string) corev1.VolumeMount {
+	t.Helper()
+	for _, mount := range mounts {
+		if mount.Name == name {
+			return mount
+		}
+	}
+	t.Fatalf("volume mount %q not found", name)
+	return corev1.VolumeMount{}
+}
+
+func TestTransformDCGMExporterNativeConfigAndWebConfig(t *testing.T) {
+	spec := gpuv1.DCGMExporterSpec{
+		Repository:   "nvcr.io/nvidia/cloud-native",
+		Image:        "dcgm-exporter",
+		Version:      "v4.10.0",
+		EnablePodUID: new(true),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-config-v1"},
+			Key:                  "custom-exporter.yaml",
+		},
+		WebConfig: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-web-v1"},
+			Key:                  "web-config.yaml",
+		},
+	}
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptionsFromSpec(&spec, "", false, false))
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: spec.NativeConfig.Name, Namespace: "operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{spec.NativeConfig.Key: string(configBytes)},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: spec.WebConfig.Name, Namespace: "operator"},
+		Data: map[string][]byte{
+			spec.WebConfig.Key: []byte("web settings"),
+			"tls.crt":          []byte("certificate"),
+			"tls.key":          []byte("private key"),
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap, secret).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		operatorNamespace: "operator",
+		logger:            ctrl.Log.WithName("test"),
+		runtime:           gpuv1.Containerd,
+	}
+	daemonSet := NewDaemonset().WithContainer(corev1.Container{
+		Name: "dcgm-exporter",
+		Env:  []corev1.EnvVar{{Name: "CUSTOM_SETTING", Value: "kept"}},
+	}).DaemonSet
+	clusterPolicySpec := &gpuv1.ClusterPolicySpec{DCGMExporter: spec}
+
+	require.NoError(t, TransformDCGMExporter(daemonSet, clusterPolicySpec, controller))
+
+	podSpec := daemonSet.Spec.Template.Spec
+	var configVolume *corev1.Volume
+	for index := range podSpec.Volumes {
+		if podSpec.Volumes[index].Name == dcgmexporter.ConfigVolumeName {
+			configVolume = &podSpec.Volumes[index]
+			break
+		}
+	}
+	require.NotNil(t, configVolume)
+	require.NotNil(t, configVolume.ConfigMap)
+	assert.Equal(t, spec.NativeConfig.Name, configVolume.ConfigMap.Name)
+	require.Len(t, configVolume.ConfigMap.Items, 1)
+	assert.Equal(t, spec.NativeConfig.Key, configVolume.ConfigMap.Items[0].Key)
+	assert.Equal(t, dcgmexporter.ConfigFileName, configVolume.ConfigMap.Items[0].Path)
+	assert.NotContains(t, daemonSet.Spec.Template.Annotations, dcgmexporter.ConfigAnnotation)
+	require.NotNil(t, podSpec.AutomountServiceAccountToken)
+	assert.True(t, *podSpec.AutomountServiceAccountToken)
+
+	container := podSpec.Containers[0]
+	env := make(map[string]string)
+	for _, variable := range container.Env {
+		env[variable.Name] = variable.Value
+	}
+	assert.Equal(t, "kept", env["CUSTOM_SETTING"])
+	assert.Equal(t, dcgmexporter.ConfigFilePath, env[dcgmexporter.ConfigFileEnvName])
+
+	var webVolume *corev1.Volume
+	for index := range podSpec.Volumes {
+		if podSpec.Volumes[index].Name == dcgmexporter.WebConfigVolumeName {
+			webVolume = &podSpec.Volumes[index]
+			break
+		}
+	}
+	require.NotNil(t, webVolume)
+	require.NotNil(t, webVolume.Secret)
+	assert.Equal(t, spec.WebConfig.Name, webVolume.Secret.SecretName)
+	require.NotNil(t, webVolume.Secret.DefaultMode)
+	assert.Equal(t, int32(0440), *webVolume.Secret.DefaultMode)
+	assert.Nil(t, webVolume.Secret.Items)
+	assert.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name:      dcgmexporter.WebConfigVolumeName,
+		ReadOnly:  true,
+		MountPath: dcgmexporter.WebConfigDirectory,
+	})
+}
+
+func TestTransformDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{HostEngine: "localhost:5555", HostNetwork: true})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "loopback-config", Namespace: "operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		operatorNamespace: "operator",
+		logger:            ctrl.Log.WithName("test"),
+		runtime:           gpuv1.Containerd,
+	}
+	spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+		Repository:  "nvcr.io/nvidia/cloud-native",
+		Image:       "dcgm-exporter",
+		Version:     "v4.10.0",
+		HostNetwork: newBoolPtr(false),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+			Key:                  "exporter.yaml",
+		},
+	}}
+	newDaemonSet := func() *appsv1.DaemonSet {
+		return NewDaemonset().WithContainer(corev1.Container{
+			Name:           "dcgm-exporter",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{}}},
+		}).DaemonSet
+	}
+
+	withoutOptIn := newDaemonSet()
+	err = TransformDCGMExporter(withoutOptIn, spec, controller)
+	require.ErrorContains(t, err, "set dcgmExporter.hostNetwork=true")
+	assert.False(t, withoutOptIn.Spec.Template.Spec.HostNetwork)
+
+	spec.DCGMExporter.HostNetwork = newBoolPtr(true)
+	withOptIn := newDaemonSet()
+	require.NoError(t, TransformDCGMExporter(withOptIn, spec, controller))
+	assert.True(t, withOptIn.Spec.Template.Spec.HostNetwork)
+	assert.Equal(t, "127.0.0.1", withOptIn.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Host)
 }
 
 func TestTransformDCGM(t *testing.T) {

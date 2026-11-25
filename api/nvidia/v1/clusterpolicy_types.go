@@ -186,9 +186,47 @@ type ServiceMonitorConfig struct {
 	MetricRelabelings []*promv1.RelabelConfig `json:"metricRelabelings,omitempty"`
 }
 
-// The Alias for backward compatibility
-// This points the old name to the new struct definition
-type DCGMExporterServiceMonitorConfig = ServiceMonitorConfig
+// DCGMExporterServiceMonitorConfig defines ServiceMonitor settings for DCGM Exporter.
+// The common fields retain their existing JSON names; the additional fields apply
+// only to the exporter endpoint.
+type DCGMExporterServiceMonitorConfig struct {
+	Enabled           *bool                   `json:"enabled,omitempty"`
+	Interval          promv1.Duration         `json:"interval,omitempty"`
+	ScrapeTimeout     promv1.Duration         `json:"scrapeTimeout,omitempty"`
+	HonorLabels       *bool                   `json:"honorLabels,omitempty"`
+	AdditionalLabels  map[string]string       `json:"additionalLabels,omitempty"`
+	Relabelings       []*promv1.RelabelConfig `json:"relabelings,omitempty"`
+	MetricRelabelings []*promv1.RelabelConfig `json:"metricRelabelings,omitempty"`
+
+	// TLSConfig configures Prometheus to verify the DCGM Exporter HTTPS endpoint.
+	// It applies to the first ServiceMonitor endpoint.
+	TLSConfig *promv1.SafeTLSConfig `json:"tlsConfig,omitempty"`
+
+	// BasicAuth configures credentials for Prometheus to scrape the DCGM Exporter endpoint.
+	// Username and password values are read from Kubernetes Secrets by Prometheus.
+	BasicAuth *promv1.BasicAuth `json:"basicAuth,omitempty"`
+}
+
+// IsEnabled reports whether the DCGM Exporter ServiceMonitor is enabled.
+func (c *DCGMExporterServiceMonitorConfig) IsEnabled() bool {
+	return c != nil && c.Enabled != nil && *c.Enabled
+}
+
+// CommonConfig returns the ServiceMonitor settings shared with other operands.
+func (c *DCGMExporterServiceMonitorConfig) CommonConfig() *ServiceMonitorConfig {
+	if c == nil {
+		return nil
+	}
+	return &ServiceMonitorConfig{
+		Enabled:           c.Enabled,
+		Interval:          c.Interval,
+		ScrapeTimeout:     c.ScrapeTimeout,
+		HonorLabels:       c.HonorLabels,
+		AdditionalLabels:  c.AdditionalLabels,
+		Relabelings:       c.Relabelings,
+		MetricRelabelings: c.MetricRelabelings,
+	}
+}
 
 // OperatorSpec describes configuration options for the operator
 type OperatorSpec struct {
@@ -1059,10 +1097,28 @@ type DCGMExporterSpec struct {
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.displayName="Custom Metrics Configuration For DCGM Exporter"
 	MetricsConfig *DCGMExporterMetricsConfig `json:"config,omitempty"`
 
+	// Optional: Reference to an immutable ConfigMap key containing a complete DCGM Exporter v2 configuration.
+	// The ConfigMap must be in the Operator namespace and must have immutable set to true.
+	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true
+	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.displayName="Native DCGM Exporter v2 configuration"
+	// +kubebuilder:validation:XValidation:rule="has(self.name) && self.name != ''",message="nativeConfig.name is required"
+	// +kubebuilder:validation:XValidation:rule="has(self.key) && self.key != ''",message="nativeConfig.key is required"
+	// +kubebuilder:validation:XValidation:rule="!has(self.optional) || !self.optional",message="nativeConfig.optional must be false"
+	NativeConfig *corev1.ConfigMapKeySelector `json:"nativeConfig,omitempty"`
+
+	// Optional: Reference to a Secret key containing the DCGM Exporter web configuration.
+	// The Secret may also contain TLS certificate files referenced by the web configuration.
+	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true
+	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.displayName="DCGM Exporter web configuration Secret"
+	// +kubebuilder:validation:XValidation:rule="has(self.name) && self.name != ''",message="webConfig.name is required"
+	// +kubebuilder:validation:XValidation:rule="has(self.key) && self.key != ''",message="webConfig.key is required"
+	// +kubebuilder:validation:XValidation:rule="!has(self.optional) || !self.optional",message="webConfig.optional must be false"
+	WebConfig *corev1.SecretKeySelector `json:"webConfig,omitempty"`
+
 	// Optional: ServiceMonitor configuration for NVIDIA DCGM Exporter
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.displayName="ServiceMonitor configuration for NVIDIA DCGM Exporter"
-	ServiceMonitor *ServiceMonitorConfig `json:"serviceMonitor,omitempty"`
+	ServiceMonitor *DCGMExporterServiceMonitorConfig `json:"serviceMonitor,omitempty"`
 
 	// Optional: Service configuration for NVIDIA DCGM Exporter
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true

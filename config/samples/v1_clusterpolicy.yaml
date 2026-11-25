@@ -48,6 +48,29 @@ spec:
     # configmap name for custom dcgm metrics
     config:
       name: ""
+    # Optional complete v2 config from an immutable ConfigMap in the Operator namespace.
+    # Use a new ConfigMap name for each revision so Pods roll and the previous revision stays available.
+    # nativeConfig:
+    #   name: dcgm-exporter-config-v2-1
+    #   key: dcgm-exporter.yaml
+    # Optional web config and certificate files from a Secret in the Operator namespace.
+    # The selected key is the web-config file; the Secret may also contain tls.crt and tls.key.
+    # webConfig:
+    #   name: dcgm-exporter-web-config-v1
+    #   key: web-config.yaml
+    # serviceMonitor:
+    #   tlsConfig:
+    #     ca:
+    #       secret:
+    #         name: dcgm-exporter-prometheus-ca
+    #         key: ca.crt
+    #   basicAuth:
+    #     username:
+    #       name: dcgm-exporter-prometheus-auth
+    #       key: username
+    #     password:
+    #       name: dcgm-exporter-prometheus-auth
+    #       key: password
 
   gds:
     enabled: false

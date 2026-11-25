@@ -21,6 +21,15 @@ spec:
   - port: gpu-metrics
     path: /metrics
     honorLabels: {{ deref .DCGMExporter.Spec.ServiceMonitor.HonorLabels }}
+    {{- if or .DCGMExporter.Spec.ServiceMonitor.TLSConfig .DCGMExporter.Spec.ServiceMonitor.BasicAuth }}
+    scheme: HTTPS
+    {{- end }}
+    {{- if .DCGMExporter.Spec.ServiceMonitor.TLSConfig }}
+    tlsConfig: {{ .DCGMExporter.Spec.ServiceMonitor.TLSConfig | toJson }}
+    {{- end }}
+    {{- if .DCGMExporter.Spec.ServiceMonitor.BasicAuth }}
+    basicAuth: {{ .DCGMExporter.Spec.ServiceMonitor.BasicAuth | toJson }}
+    {{- end }}
     {{- if .DCGMExporter.Spec.ServiceMonitor.Interval }}
     interval: {{ .DCGMExporter.Spec.ServiceMonitor.Interval | quote }}
     {{- end }}

@@ -31,7 +31,7 @@ spec:
     enabled: false
     repository: nvcr.io/nvidia/cloud-native
     image: dcgm
-    version: 4.5.2-1-ubuntu22.04
+    version: 4.8.0-ubuntu24.04
     imagePullPolicy: IfNotPresent
     imagePullSecrets: []
     args: []
@@ -42,7 +42,7 @@ spec:
     enabled: true
     repository: nvcr.io/nvidia/k8s
     image: dcgm-exporter
-    version: 4.5.1-4.8.0-distroless
+    version: 4.10.0
     imagePullPolicy: IfNotPresent
     imagePullSecrets: []
     args: []
@@ -67,6 +67,27 @@ spec:
       additionalLabels: {}
       relabelings: []
       metricRelabelings: []
+      # When enabled, TLS settings use Prometheus Operator's SafeTLSConfig fields.
+      # tlsConfig:
+      #   ca:
+      #     secret:
+      #       name: dcgm-exporter-prometheus-ca
+      #       key: ca.crt
+      # basicAuth:
+      #   username:
+      #     name: dcgm-exporter-prometheus-auth
+      #     key: username
+      #   password:
+      #     name: dcgm-exporter-prometheus-auth
+      #     key: password
+    # nativeConfig references a complete v2 file in an immutable ConfigMap in this namespace.
+    # nativeConfig:
+    #   name: dcgm-exporter-config-v2-1
+    #   key: dcgm-exporter.yaml
+    # webConfig references the exporter web config and cert/key files in a Secret in this namespace.
+    # webConfig:
+    #   name: dcgm-exporter-web-config-v1
+    #   key: web-config.yaml
   # Host paths used in host-path volumes for various components
   hostPaths:
     rootFS: "/"

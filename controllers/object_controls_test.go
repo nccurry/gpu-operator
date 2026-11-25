@@ -43,6 +43,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,6 +53,7 @@ import (
 	gpuv1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	nvidiav1alpha1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1alpha1"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 )
 
 const (
@@ -1763,8 +1765,29 @@ func getDCGMExporterTestInput(testCase string) *gpuv1.ClusterPolicy {
 		cp.Spec.DCGMExporter.EnablePodUID = new(true)
 	case "pod-labels-env":
 		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
-			{Name: "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS", Value: "true"},
+			{Name: DCGMExporterPodLabelsEnvName, Value: "true"},
 		}
+	case "pod-labels-env-one":
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodLabelsEnvName, Value: "1"},
+		}
+	case "pod-labels-args":
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels"}
+	case "pod-uid-args":
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-uid"}
+	case "pod-labels-arg-false":
+		cp.Spec.DCGMExporter.EnablePodLabels = new(true)
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels=false"}
+	case "pod-uid-env-false":
+		cp.Spec.DCGMExporter.EnablePodUID = new(true)
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodUIDEnvName, Value: "false"},
+		}
+	case "pod-labels-arg-over-env-false":
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodLabelsEnvName, Value: "false"},
+		}
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels"}
 	case "configmap-data-env":
 		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
 			{Name: "DCGM_EXPORTER_CONFIGMAP_DATA", Value: "gpu-operator:custom-metrics"},
@@ -1790,32 +1813,67 @@ func getDCGMExporterTestOutput(testCase string) map[string]any {
 
 	switch testCase {
 	case "default":
-		output["env"] = map[string]string{}
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
 	case "standalone-dcgm":
 		output["env"] = map[string]string{
-			"DCGM_REMOTE_HOSTENGINE_INFO": "nvidia-dcgm:5555",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 	case "pod-labels-enabled":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS": "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "pod-uid-enabled":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID": "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "pod-labels-env":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS": "true",
+			DCGMExporterPodLabelsEnvName:   "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-env-one":
+		output["env"] = map[string]string{
+			DCGMExporterPodLabelsEnvName:   "1",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-args":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-labels"}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-uid-args":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-uid"}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-arg-false":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-labels=false"}
+	case "pod-uid-env-false":
+		output["env"] = map[string]string{
+			DCGMExporterPodUIDEnvName:      "false",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+	case "pod-labels-arg-over-env-false":
+		output["env"] = map[string]string{
+			DCGMExporterPodLabelsEnvName:   "false",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+		output["args"] = []string{"--kubernetes-enable-pod-labels"}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "configmap-data-env":
 		output["env"] = map[string]string{
 			"DCGM_EXPORTER_CONFIGMAP_DATA": "gpu-operator:custom-metrics",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["automountToken"] = true
 	default:
@@ -1859,6 +1917,36 @@ func TestDCGMExporter(t *testing.T) {
 			getDCGMExporterTestOutput("pod-labels-env"),
 		},
 		{
+			"PodLabelsViaEnvOne",
+			getDCGMExporterTestInput("pod-labels-env-one"),
+			getDCGMExporterTestOutput("pod-labels-env-one"),
+		},
+		{
+			"PodLabelsViaArgs",
+			getDCGMExporterTestInput("pod-labels-args"),
+			getDCGMExporterTestOutput("pod-labels-args"),
+		},
+		{
+			"PodUIDViaArgs",
+			getDCGMExporterTestInput("pod-uid-args"),
+			getDCGMExporterTestOutput("pod-uid-args"),
+		},
+		{
+			"PodLabelsArgFalseOverridesTypedField",
+			getDCGMExporterTestInput("pod-labels-arg-false"),
+			getDCGMExporterTestOutput("pod-labels-arg-false"),
+		},
+		{
+			"PodUIDEnvFalseOverridesTypedField",
+			getDCGMExporterTestInput("pod-uid-env-false"),
+			getDCGMExporterTestOutput("pod-uid-env-false"),
+		},
+		{
+			"PodLabelsArgOverridesEnvFalse",
+			getDCGMExporterTestInput("pod-labels-arg-over-env-false"),
+			getDCGMExporterTestOutput("pod-labels-arg-over-env-false"),
+		},
+		{
 			"ConfigMapDataViaEnv",
 			getDCGMExporterTestInput("configmap-data-env"),
 			getDCGMExporterTestOutput("configmap-data-env"),
@@ -1890,14 +1978,28 @@ func TestDCGMExporter(t *testing.T) {
 			for key, value := range tc.output["env"].(map[string]string) {
 				require.Equal(t, value, getContainerEnv(&ds.Spec.Template.Spec.Containers[0], key), "unexpected value for env var %s on daemonset nvidia-dcgm-exporter", key)
 			}
+			if expectedArgs, ok := tc.output["args"]; ok {
+				require.Equal(t, expectedArgs, ds.Spec.Template.Spec.Containers[0].Args)
+			}
 
-			// A slow start gets up to 5 minutes before the liveness probe applies.
+			// The chart's startup probe controls how long a slow start may take.
 			startupProbe := ds.Spec.Template.Spec.Containers[0].StartupProbe
 			require.NotNil(t, startupProbe, "dcgm-exporter must have a startup probe")
 			require.NotNil(t, startupProbe.HTTPGet)
-			require.Equal(t, "/health", startupProbe.HTTPGet.Path)
-			require.Equal(t, int32(5), startupProbe.PeriodSeconds)
-			require.Equal(t, int32(60), startupProbe.FailureThreshold)
+			defaults, err := dcgmexporter.DefaultDeploymentDefaults()
+			require.NoError(t, err)
+			metricsPort, err := defaults.Port(dcgmexporter.MetricsPortName)
+			require.NoError(t, err)
+			healthPort, err := defaults.Port(dcgmexporter.HealthPortName)
+			require.NoError(t, err)
+			require.Equal(t, defaults.StartupProbe.HTTPGet.Path, startupProbe.HTTPGet.Path)
+			require.Equal(t, dcgmexporter.HealthPortName, startupProbe.HTTPGet.Port.String())
+			require.Equal(t, defaults.ReadinessProbe.HTTPGet.Path, ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Path)
+			require.Equal(t, dcgmexporter.HealthPortName, ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.String())
+			require.Equal(t, defaults.StartupProbe.PeriodSeconds, startupProbe.PeriodSeconds)
+			require.Equal(t, defaults.StartupProbe.FailureThreshold, startupProbe.FailureThreshold)
+			require.Equal(t, metricsPort, ds.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort)
+			require.Equal(t, healthPort, ds.Spec.Template.Spec.Containers[0].Ports[1].ContainerPort)
 
 			// Liveness and readiness start once the startup probe succeeds, so a
 			// delay would only hold back a pod that is already serving.
@@ -2233,6 +2335,344 @@ func TestServiceMonitor(t *testing.T) {
 	}
 }
 
+func TestDCGMExporterServiceMonitorSecureScrape(t *testing.T) {
+	const (
+		testNamespace      = "test-namespace"
+		testServiceMonitor = "test-service-monitor"
+	)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, promv1.AddToScheme(scheme))
+	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
+	require.NoError(t, gpuv1.AddToScheme(scheme))
+
+	ca := promv1.SecretOrConfigMap{Secret: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "prometheus-ca"},
+		Key:                  "ca.crt",
+	}}
+	tlsConfig := &promv1.SafeTLSConfig{CA: ca, ServerName: new("dcgm-exporter.example")}
+	auth := &promv1.BasicAuth{
+		Username: corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "dcgm-exporter-auth"},
+			Key:                  "username",
+		},
+		Password: corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "dcgm-exporter-auth"},
+			Key:                  "password",
+		},
+	}
+	serviceMonitor := promv1.ServiceMonitor{
+		ObjectMeta: metav1.ObjectMeta{Name: testServiceMonitor},
+		Spec:       promv1.ServiceMonitorSpec{Endpoints: []promv1.Endpoint{{Port: "gpu-metrics", Path: "/metrics"}}},
+	}
+	serviceMonitorCRD := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: ServiceMonitorCRDName},
+	}
+	clusterPolicy := &gpuv1.ClusterPolicy{Spec: gpuv1.ClusterPolicySpec{
+		DCGMExporter: gpuv1.DCGMExporterSpec{
+			ServiceMonitor: &gpuv1.DCGMExporterServiceMonitorConfig{
+				Enabled:   new(true),
+				TLSConfig: tlsConfig,
+				BasicAuth: auth,
+			},
+		},
+	}}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(serviceMonitorCRD).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		singleton:         clusterPolicy,
+		scheme:            scheme,
+		operatorNamespace: testNamespace,
+		resources:         []Resources{{ServiceMonitor: serviceMonitor}},
+		stateNames:        []string{"state-dcgm-exporter"},
+		logger:            ctrl.Log.WithName("test"),
+	}
+
+	state, err := ServiceMonitor(controller)
+	require.NoError(t, err)
+	require.Equal(t, gpuv1.Ready, state)
+
+	found := &promv1.ServiceMonitor{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testServiceMonitor}, found))
+	require.Len(t, found.Spec.Endpoints, 1)
+	endpoint := found.Spec.Endpoints[0]
+	require.NotNil(t, endpoint.Scheme)
+	require.Equal(t, promv1.SchemeHTTPS, *endpoint.Scheme)
+	require.NotNil(t, endpoint.TLSConfig)
+	require.Equal(t, *tlsConfig, endpoint.TLSConfig.SafeTLSConfig)
+	require.Equal(t, auth, endpoint.BasicAuth)
+
+	clusterPolicy.Spec.DCGMExporter.ServiceMonitor.TLSConfig = nil
+	state, err = ServiceMonitor(controller)
+	require.NoError(t, err)
+	require.Equal(t, gpuv1.Ready, state)
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testServiceMonitor}, found))
+	endpoint = found.Spec.Endpoints[0]
+	require.NotNil(t, endpoint.Scheme)
+	require.Equal(t, promv1.SchemeHTTPS, *endpoint.Scheme)
+	require.Nil(t, endpoint.TLSConfig)
+	require.Equal(t, auth, endpoint.BasicAuth)
+}
+
+func TestDCGMExporterInvalidNativeConfigKeepsPreviousDaemonSet(t *testing.T) {
+	const operatorNamespace = "operator"
+	clusterPolicy := &gpuv1.ClusterPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-policy"},
+		Spec: gpuv1.ClusterPolicySpec{
+			DCGMExporter: gpuv1.DCGMExporterSpec{
+				Enabled: new(true),
+				NativeConfig: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "mutable-exporter-config"},
+					Key:                  "exporter.yaml",
+				},
+			},
+		},
+	}
+	previous := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "nvidia-dcgm-exporter", Namespace: operatorNamespace},
+		Spec: appsv1.DaemonSetSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "dcgm-exporter", Image: "previous-valid-image"}},
+		}}},
+	}
+	immutable := false
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "mutable-exporter-config", Namespace: operatorNamespace},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": "invalid native revision"},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, gpuv1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(previous, configMap).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		singleton:         clusterPolicy,
+		scheme:            scheme,
+		operatorNamespace: operatorNamespace,
+		resources: []Resources{{DaemonSet: appsv1.DaemonSet{
+			ObjectMeta: metav1.ObjectMeta{Name: previous.Name},
+			Spec:       previous.Spec,
+		}}},
+		stateNames:  []string{"state-dcgm-exporter"},
+		hasGPUNodes: true,
+		runtime:     gpuv1.Containerd,
+		logger:      ctrl.Log.WithName("test"),
+	}
+
+	state, err := DaemonSet(controller)
+	require.ErrorContains(t, err, "must be immutable")
+	require.Equal(t, gpuv1.NotReady, state)
+
+	retained := &appsv1.DaemonSet{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(previous), retained))
+	require.Equal(t, previous, retained)
+}
+
+func TestDCGMExporterNativePodMetadataRequiresExplicitRBACOptIn(t *testing.T) {
+	const operatorNamespace = "operator"
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{PodUID: true})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "exporter-config-v1", Namespace: operatorNamespace},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nvidia-dcgm-exporter-read-pods",
+			Namespace: operatorNamespace,
+			Labels:    map[string]string{"app": "nvidia-dcgm-exporter"},
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get", "list", "watch"},
+		}},
+	}
+	binding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "nvidia-dcgm-exporter-read-pods",
+			Namespace: operatorNamespace,
+			Labels:    map[string]string{"app": "nvidia-dcgm-exporter"},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     "nvidia-dcgm-exporter-read-pods",
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      "nvidia-dcgm-exporter",
+			Namespace: operatorNamespace,
+		}},
+	}
+	existingRole := role.DeepCopy()
+	existingBinding := binding.DeepCopy()
+	clusterPolicy := &gpuv1.ClusterPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster-policy"},
+		Spec: gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+			NativeConfig: &corev1.ConfigMapKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+				Key:                  "exporter.yaml",
+			},
+		}},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, rbacv1.AddToScheme(scheme))
+	require.NoError(t, gpuv1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap, existingRole, existingBinding).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		singleton:         clusterPolicy,
+		scheme:            scheme,
+		operatorNamespace: operatorNamespace,
+		resources: []Resources{{
+			ClusterRole:        *role.DeepCopy(),
+			ClusterRoleBinding: *binding.DeepCopy(),
+		}},
+		stateNames: []string{"state-dcgm-exporter"},
+		logger:     ctrl.Log.WithName("test"),
+	}
+
+	for _, reconcile := range []struct {
+		name string
+		fn   func(ClusterPolicyController) (gpuv1.State, error)
+	}{
+		{name: "ClusterRole", fn: ClusterRole},
+		{name: "ClusterRoleBinding", fn: ClusterRoleBinding},
+	} {
+		t.Run(reconcile.name, func(t *testing.T) {
+			state, err := reconcile.fn(controller)
+			require.ErrorContains(t, err, "enable dcgmExporter.enablePodUID or dcgmExporter.enablePodLabels")
+			require.Equal(t, gpuv1.NotReady, state)
+		})
+	}
+
+	retainedRole := &rbacv1.ClusterRole{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingRole), retainedRole))
+	retainedBinding := &rbacv1.ClusterRoleBinding{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingBinding), retainedBinding))
+	require.Equal(t, existingRole.Rules, retainedRole.Rules)
+	require.Equal(t, existingBinding.RoleRef, retainedBinding.RoleRef)
+	require.Equal(t, existingBinding.Subjects, retainedBinding.Subjects)
+
+	require.NoError(t, k8sClient.Delete(context.Background(), retainedRole))
+	require.NoError(t, k8sClient.Delete(context.Background(), retainedBinding))
+	clusterPolicy.Spec.DCGMExporter.EnablePodUID = new(true)
+	for _, reconcile := range []struct {
+		name string
+		fn   func(ClusterPolicyController) (gpuv1.State, error)
+	}{
+		{name: "ClusterRole", fn: ClusterRole},
+		{name: "ClusterRoleBinding", fn: ClusterRoleBinding},
+	} {
+		t.Run(reconcile.name+" after opt-in", func(t *testing.T) {
+			state, err := reconcile.fn(controller)
+			require.NoError(t, err)
+			require.Equal(t, gpuv1.Ready, state)
+		})
+	}
+	updatedRole := &rbacv1.ClusterRole{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingRole), updatedRole))
+	require.Equal(t, role.Rules, updatedRole.Rules)
+	updatedBinding := &rbacv1.ClusterRoleBinding{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingBinding), updatedBinding))
+	require.Equal(t, binding.RoleRef, updatedBinding.RoleRef)
+	require.Equal(t, binding.Subjects, updatedBinding.Subjects)
+
+	clusterPolicy.Spec.DCGMExporter.EnablePodUID = new(false)
+	clusterPolicy.Spec.DCGMExporter.NativeConfig = nil
+	clusterPolicy.Spec.DCGMExporter.WebConfig = &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: "missing-web-config"},
+		Key:                  "web.yaml",
+	}
+	for _, reconcile := range []struct {
+		name string
+		fn   func(ClusterPolicyController) (gpuv1.State, error)
+	}{
+		{name: "ClusterRole after generated config Secret failure", fn: ClusterRole},
+		{name: "ClusterRoleBinding after generated config Secret failure", fn: ClusterRoleBinding},
+	} {
+		t.Run(reconcile.name, func(t *testing.T) {
+			state, err := reconcile.fn(controller)
+			require.ErrorContains(t, err, "was not found in the Operator namespace")
+			require.Equal(t, gpuv1.NotReady, state)
+		})
+	}
+
+	clusterPolicy.Spec.DCGMExporter.WebConfig = nil
+	clusterPolicy.Spec.DCGMExporter.Args = []string{"--address", "127.0.0.1:9400"}
+	for _, reconcile := range []struct {
+		name string
+		fn   func(ClusterPolicyController) (gpuv1.State, error)
+	}{
+		{name: "ClusterRole after invalid generated override", fn: ClusterRole},
+		{name: "ClusterRoleBinding after invalid generated override", fn: ClusterRoleBinding},
+	} {
+		t.Run(reconcile.name, func(t *testing.T) {
+			state, err := reconcile.fn(controller)
+			require.ErrorContains(t, err, "conflicts with the Operator Service")
+			require.Equal(t, gpuv1.NotReady, state)
+		})
+	}
+	retainedRole = &rbacv1.ClusterRole{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingRole), retainedRole))
+	retainedBinding = &rbacv1.ClusterRoleBinding{}
+	require.NoError(t, k8sClient.Get(context.Background(), client.ObjectKeyFromObject(existingBinding), retainedBinding))
+	require.Equal(t, updatedRole.Rules, retainedRole.Rules)
+	require.Equal(t, updatedBinding.RoleRef, retainedBinding.RoleRef)
+	require.Equal(t, updatedBinding.Subjects, retainedBinding.Subjects)
+}
+
+func TestPreProcessNativeExporterRejectsGlobalReservedAnnotation(t *testing.T) {
+	const operatorNamespace = "operator"
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "exporter-config", Namespace: operatorNamespace},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	policy := &gpuv1.ClusterPolicy{
+		Spec: gpuv1.ClusterPolicySpec{
+			Daemonsets: gpuv1.DaemonsetsSpec{
+				Annotations: map[string]string{dcgmexporter.ConfigAnnotation: "user-value"},
+			},
+			DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository: "nvcr.io/nvidia/k8s",
+				Image:      "dcgm-exporter",
+				Version:    "4.10.0",
+				NativeConfig: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+					Key:                  "exporter.yaml",
+				},
+			},
+		},
+	}
+	daemonSet := NewDaemonset().WithName("nvidia-dcgm-exporter").WithContainer(corev1.Container{Name: "dcgm-exporter"}).DaemonSet
+	controller := ClusterPolicyController{
+		ctx:               context.Background(),
+		singleton:         policy,
+		client:            k8sClient,
+		logger:            ctrl.Log.WithName("test"),
+		operatorNamespace: operatorNamespace,
+		runtime:           gpuv1.Containerd,
+	}
+
+	err = preProcessDaemonSet(daemonSet, controller)
+	require.ErrorContains(t, err, "reserved")
+}
+
 func TestService(t *testing.T) {
 	const (
 		testNamespace = "test-namespace"
@@ -2247,7 +2687,9 @@ func TestService(t *testing.T) {
 	// Template Service
 	service := corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: testService},
-		Spec:       corev1.ServiceSpec{},
+		Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{
+			Name: "gpu-metrics", Port: 9400, TargetPort: intstr.FromInt32(9400),
+		}}},
 	}
 
 	// Helper to create controller with given spec
@@ -2358,6 +2800,10 @@ func TestService(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, tc.expectedType, found.Spec.Type)
+			require.Len(t, found.Spec.Ports, 1)
+			require.Equal(t, "gpu-metrics", found.Spec.Ports[0].Name)
+			require.Equal(t, int32(9400), found.Spec.Ports[0].Port)
+			require.Equal(t, intstr.FromString(dcgmexporter.MetricsPortName), found.Spec.Ports[0].TargetPort)
 			if tc.expectedPolicy != nil {
 				require.NotNil(t, found.Spec.InternalTrafficPolicy)
 				require.Equal(t, *tc.expectedPolicy, *found.Spec.InternalTrafficPolicy)

@@ -32,15 +32,10 @@ spec:
         {{ $k }}: {{ $v | quote }}
         {{- end }}
         {{- end }}
-      {{- if or .Daemonsets.Annotations .DCGMExporter.Spec.Annotations }}
       annotations:
-        {{- range $k, $v := .Daemonsets.Annotations }}
+        {{- range $k, $v := .PodAnnotations }}
         {{ $k }}: {{ $v | quote }}
         {{- end }}
-        {{- range $k, $v := .DCGMExporter.Spec.Annotations }}
-        {{ $k }}: {{ $v | quote }}
-        {{- end }}
-      {{- end }}
     spec:
       {{- with .Daemonsets.PodSecurityContext }}
       securityContext: {{ . | toJson }}
@@ -87,73 +82,26 @@ spec:
         {{- end }}
         {{- end }}
         env:
-        - name: DCGM_EXPORTER_LISTEN
-          value: ":9400"
-        - name: DCGM_EXPORTER_KUBERNETES
-          value: "true"
-        - name: DCGM_EXPORTER_COLLECTORS
-          value: {{ .Collectors | quote }}
         - name: NODE_NAME
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        {{- if .RemoteHostEngine }}
-        - name: DCGM_REMOTE_HOSTENGINE_INFO
-          value: {{ .RemoteHostEngine | quote }}
-        {{- end }}
-        {{- if .HPCJobMappingDir }}
-        - name: DCGM_HPC_JOB_MAPPING_DIR
-          value: {{ .HPCJobMappingDir | quote }}
-        {{- end }}
-        # The kubelet reports DRA-allocated devices as (pool, device) names rather
-        # than GPU UUIDs, so the exporter needs the ResourceSlice informer to resolve
-        # them. Without this the metrics carry no pod, namespace or container label.
-        - name: KUBERNETES_ENABLE_DRA
-          value: "true"
-        {{- if .EnablePodLabels }}
-        - name: DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS
-          value: "true"
-        {{- end }}
-        {{- if .EnablePodUID }}
-        - name: DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID
-          value: "true"
-        {{- end }}
-        {{- if .PodLabelAllowlistRegex }}
-        - name: DCGM_EXPORTER_KUBERNETES_POD_LABEL_ALLOWLIST_REGEX
-          value: {{ .PodLabelAllowlistRegex | quote }}
-        {{- end }}
         {{- range .DCGMExporter.Spec.Env }}
         - name: {{ .Name }}
           value: {{ .Value | quote }}
         {{- end }}
+        - name: {{ .ConfigFileEnvName }}
+          value: {{ .ConfigFilePath | quote }}
         {{- with .DCGMExporter.Spec.SecurityContext }}
         securityContext: {{ . | toJson }}
         {{- else }}
         securityContext:
           privileged: true
         {{- end }}
-        ports:
-        - name: "metrics"
-          containerPort: 9400
-        # A large metric file on a node with many GPUs can take about a minute
-        # before /health answers. The startup probe allows up to 5 minutes;
-        # the liveness and readiness probes start as soon as it succeeds, so they
-        # need no initial delay.
-        startupProbe:
-          httpGet:
-            port: 9400
-            path: /health
-          periodSeconds: 5
-          failureThreshold: 60
-        livenessProbe:
-          httpGet:
-            port: 9400
-            path: /health
-          periodSeconds: 5
-        readinessProbe:
-          httpGet:
-            port: 9400
-            path: /health
+        ports: {{ .ContainerDefaults.Ports | toJson }}
+        startupProbe: {{ .ContainerDefaults.StartupProbe | toJson }}
+        livenessProbe: {{ .ContainerDefaults.LivenessProbe | toJson }}
+        readinessProbe: {{ .ContainerDefaults.ReadinessProbe | toJson }}
         resources:
           {{- if .DCGMExporter.Spec.Resources }}
           {{- if .DCGMExporter.Spec.Resources.Limits }}
@@ -166,14 +114,21 @@ spec:
           claims:
           - name: admin-gpus
         volumeMounts:
+        - name: {{ .ConfigVolumeName }}
+          readOnly: true
+          mountPath: {{ .ConfigFileDirectory }}
+        {{- if .WebConfigSecretName }}
+        - name: dcgm-exporter-web-config
+          readOnly: true
+          mountPath: {{ .WebConfigMountDirectory }}
+        {{- end }}
         - name: pod-gpu-resources
           readOnly: true
           mountPath: /var/lib/kubelet/pod-resources
         {{- if .MetricsConfigName }}
         - name: metrics-config
           readOnly: true
-          mountPath: /etc/dcgm-exporter/dcgm-metrics.csv
-          subPath: dcgm-metrics.csv
+          mountPath: {{ .MetricsConfigMountDirectory }}
         {{- end }}
         {{- if .HPCJobMappingDir }}
         - name: hpc-job-mapping
@@ -181,6 +136,26 @@ spec:
           mountPath: {{ .HPCJobMappingDir }}
         {{- end }}
       volumes:
+      - name: {{ .ConfigVolumeName }}
+        {{- if .NativeConfigName }}
+        configMap:
+          name: {{ .NativeConfigName }}
+          items:
+          - key: {{ .NativeConfigKey }}
+            path: {{ .ConfigFileName }}
+        {{- else }}
+        downwardAPI:
+          items:
+          - fieldRef:
+              fieldPath: {{ printf "metadata.annotations['%s']" .ConfigAnnotation | quote }}
+            path: {{ .ConfigFileName }}
+        {{- end }}
+      {{- if .WebConfigSecretName }}
+      - name: dcgm-exporter-web-config
+        secret:
+          secretName: {{ .WebConfigSecretName }}
+          defaultMode: 288
+      {{- end }}
       - name: pod-gpu-resources
         hostPath:
           path: {{ .PodResourcesDir }}

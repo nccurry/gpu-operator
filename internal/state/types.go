@@ -18,6 +18,7 @@ package state
 
 import (
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -100,15 +101,23 @@ type dcgmExporterRenderData struct {
 	OpenshiftVersion string
 	// ResourceClaimAPIVersion is the apiVersion to render on ResourceClaimTemplate objects.
 	ResourceClaimAPIVersion      string
-	RemoteHostEngine             string
-	Collectors                   string
+	ConfigFileEnvName            string
+	ConfigFileDirectory          string
+	ConfigFileName               string
+	ConfigFilePath               string
+	ConfigVolumeName             string
+	ConfigAnnotation             string
+	PodAnnotations               map[string]string
+	NativeConfigName             string
+	NativeConfigKey              string
+	WebConfigSecretName          string
+	WebConfigMountDirectory      string
 	HPCJobMappingDir             string
-	PodLabelAllowlistRegex       string
-	EnablePodLabels              bool
-	EnablePodUID                 bool
 	HostPID                      bool
 	HostNetwork                  bool
 	MetricsConfigName            string
+	MetricsConfigMountDirectory  string
+	ContainerDefaults            *corev1.Container
 	ServiceMonitorEnabled        bool
 	PodResourcesDir              string
 	ServiceType                  string
