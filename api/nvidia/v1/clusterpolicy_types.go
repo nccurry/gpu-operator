@@ -1033,6 +1033,10 @@ type DCGMExporterSpec struct {
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.x-descriptors="urn:alm:descriptor:com.tectonic.ui:advanced,urn:alm:descriptor:com.tectonic.ui:resourceRequirements"
 	Resources *ResourceRequirements `json:"resources,omitempty"`
 
+	// Optional: Set security options for the DCGM Exporter container. When unset, the
+	// existing privileged default is preserved.
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
 	// Optional: List of arguments
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors=true
 	// +operator-sdk:gen-csv:customresourcedefinitions.specDescriptors.displayName="Arguments"

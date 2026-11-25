@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -52,6 +53,26 @@ func TestGetObjectHash(t *testing.T) {
 		assert.NotEqual(t, GetObjectHash(withZero), GetObjectHash(withNonZero))
 	})
 
+}
+
+func TestParseMaxUnavailable(t *testing.T) {
+	testCases := map[string]struct {
+		input string
+		want  intstr.IntOrString
+	}{
+		"integer":    {input: "3", want: intstr.FromInt32(3)},
+		"percentage": {input: "25%", want: intstr.FromString("25%")},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			got, err := ParseMaxUnavailable(tc.input)
+			assert.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	_, err := ParseMaxUnavailable("10%abc")
+	assert.Error(t, err)
 }
 
 func TestGetObjectHashIgnoreEmptyKeys(t *testing.T) {

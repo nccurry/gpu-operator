@@ -26,9 +26,11 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/davecgh/go-spew/spew"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -146,6 +148,18 @@ func SetEnvVar(envvars []string, key, value string) []string {
 		return strings.HasPrefix(e, key+"=")
 	})
 	return append(envvars, key+"="+value)
+}
+
+// ParseMaxUnavailable converts the DaemonSet maxUnavailable string while preserving
+// its numeric-versus-percentage representation. Numeric values must fit in int32.
+func ParseMaxUnavailable(value string) (intstr.IntOrString, error) {
+	if strings.HasSuffix(value, "%") {
+		return intstr.Parse(value), nil
+	}
+	if _, err := strconv.ParseInt(value, 10, 32); err != nil {
+		return intstr.IntOrString{}, err
+	}
+	return intstr.Parse(value), nil
 }
 
 // WriteFileAtomically writes content to the specified file via a temp file + rename,

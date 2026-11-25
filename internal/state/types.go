@@ -17,6 +17,7 @@
 package state
 
 import (
+	appsv1 "k8s.io/api/apps/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -90,9 +91,10 @@ type dcgmExporterSpec struct {
 // that mirror the ClusterPolicy TransformDCGMExporter logic are precomputed in
 // getManifestObjects so the templates stay declarative.
 type dcgmExporterRenderData struct {
-	DCGMExporter *dcgmExporterSpec
-	Daemonsets   *nvidiav1.DaemonsetsSpec
-	Namespace    string
+	DCGMExporter   *dcgmExporterSpec
+	Daemonsets     *nvidiav1.DaemonsetsSpec
+	UpdateStrategy appsv1.DaemonSetUpdateStrategy
+	Namespace      string
 	// OpenshiftVersion gates OpenShift-only objects (SecurityContextConstraints); empty
 	// on vanilla Kubernetes.
 	OpenshiftVersion string

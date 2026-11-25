@@ -81,6 +81,77 @@ func renderChart(t *testing.T, values string) (*appsv1.Deployment, *policyv1.Pod
 	return deployment, pdb
 }
 
+func TestDCGMExporterSecurityContextRenderedInBothCRs(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm binary not found in PATH")
+	}
+	crTemplates := []struct {
+		name       string
+		template   string
+		crEnabling string
+	}{
+		{
+			name:       "ClusterPolicy",
+			template:   "templates/clusterpolicy.yaml",
+			crEnabling: "clusterPolicy:\n  deployCR: true\ngpuCluster:\n  deployCR: false\n",
+		},
+		{
+			name:       "GPUCluster",
+			template:   "templates/gpucluster.yaml",
+			crEnabling: "clusterPolicy:\n  deployCR: false\ngpuCluster:\n  deployCR: true\ndriver:\n  nvidiaDriverCRD:\n    enabled: true\n",
+		},
+	}
+	securityContexts := []struct {
+		name        string
+		yaml        string
+		want        map[string]any
+		wantPresent bool
+	}{
+		{name: "unset"},
+		{
+			name:        "full context",
+			yaml:        "  securityContext:\n    privileged: false\n    runAsNonRoot: true\n",
+			want:        map[string]any{"privileged": false, "runAsNonRoot": true},
+			wantPresent: true,
+		},
+		{
+			name:        "empty context",
+			yaml:        "  securityContext: {}\n",
+			want:        map[string]any{},
+			wantPresent: true,
+		},
+	}
+
+	for _, crTemplate := range crTemplates {
+		for _, securityContext := range securityContexts {
+			t.Run(crTemplate.name+"/"+securityContext.name, func(t *testing.T) {
+				values := crTemplate.crEnabling
+				if securityContext.yaml != "" {
+					values += "dcgmExporter:\n" + securityContext.yaml
+				}
+				cmd := exec.Command("helm", "template", "gpu-operator", ".", "--namespace", "gpu-operator", "--values", "-", "--show-only", crTemplate.template, "--api-versions", "resource.k8s.io/v1/DeviceClass")
+				cmd.Stdin = strings.NewReader(values)
+				var stderr strings.Builder
+				cmd.Stderr = &stderr
+				out, err := cmd.Output()
+				require.NoError(t, err, stderr.String())
+
+				var object map[string]any
+				require.NoError(t, yaml.Unmarshal(out, &object))
+				spec, ok := object["spec"].(map[string]any)
+				require.True(t, ok)
+				exporter, ok := spec["dcgmExporter"].(map[string]any)
+				require.True(t, ok)
+				if securityContext.wantPresent {
+					require.Equal(t, securityContext.want, exporter["securityContext"])
+				} else {
+					require.NotContains(t, exporter, "securityContext")
+				}
+			})
+		}
+	}
+}
+
 func requireSoftPodAntiAffinity(t *testing.T, deployment *appsv1.Deployment) {
 	t.Helper()
 	podAntiAffinity := deployment.Spec.Template.Spec.Affinity.PodAntiAffinity

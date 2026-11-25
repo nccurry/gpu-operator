@@ -343,6 +343,10 @@ dcgmExporter:
   imagePullPolicy: IfNotPresent
   env: []
   resources: {}
+  # Optional full Kubernetes SecurityContext for the exporter container. Unset keeps
+  # the existing privileged default; pod-level settings belong under daemonsets.
+  # securityContext:
+  #   runAsNonRoot: true
   hostPID: false
   hostNetwork: false
   # HPC job mapping configuration for correlating GPU metrics with HPC workload manager jobs

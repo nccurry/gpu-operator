@@ -21,8 +21,7 @@ spec:
   selector:
     matchLabels:
       app: nvidia-dcgm-exporter-dra
-  updateStrategy:
-    type: RollingUpdate
+  updateStrategy: {{ .UpdateStrategy | toJson }}
   template:
     metadata:
       labels:
@@ -43,6 +42,9 @@ spec:
         {{- end }}
       {{- end }}
     spec:
+      {{- with .Daemonsets.PodSecurityContext }}
+      securityContext: {{ . | toJson }}
+      {{- end }}
       priorityClassName: {{ .Daemonsets.PriorityClassName | default "system-node-critical" | quote }}
       serviceAccountName: nvidia-dcgm-exporter-dra
       automountServiceAccountToken: true
@@ -124,8 +126,12 @@ spec:
         - name: {{ .Name }}
           value: {{ .Value | quote }}
         {{- end }}
+        {{- with .DCGMExporter.Spec.SecurityContext }}
+        securityContext: {{ . | toJson }}
+        {{- else }}
         securityContext:
           privileged: true
+        {{- end }}
         ports:
         - name: "metrics"
           containerPort: 9400
