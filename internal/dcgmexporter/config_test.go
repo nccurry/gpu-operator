@@ -309,6 +309,10 @@ func TestValidateUserOverrides(t *testing.T) {
 			env:  []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: "$(EXPORTER_LISTEN_ADDRESS)"}},
 			want: metricsListenEnvName,
 		},
+		"CLI expansion with a conflicting literal port": {
+			args: []string{"--address", "$(METRICS_HOST):1234"},
+			want: "--address",
+		},
 		"former CSV path needs migration": {
 			args: []string{"-f", oldMetricsFilePath},
 			want: CustomMetricsFilePath,
@@ -362,6 +366,16 @@ func TestServiceAddressRequiresLiteralWildcardAndPort(t *testing.T) {
 		assert.False(t, serviceAddress(address, metricsPort), "serviceAddress must only validate literal listeners")
 	}
 	assert.True(t, serviceAddress(fmt.Sprintf(":%d", metricsPort), metricsPort))
+}
+
+func TestServiceAddressUsesConfiguredPort(t *testing.T) {
+	const configuredPort = 12345
+
+	assert.True(t, serviceAddress(":12345", configuredPort))
+	assert.True(t, serviceAddress("0.0.0.0:12345", configuredPort))
+	assert.True(t, serviceAddress("[::]:12345", configuredPort))
+	assert.False(t, serviceAddress(":9400", configuredPort))
+	assert.False(t, serviceAddress("$(EXPORTER_PORT)", configuredPort))
 }
 
 func defaultPortAddress(t *testing.T, host, name string) string {

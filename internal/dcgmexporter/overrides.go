@@ -145,6 +145,8 @@ func serviceAddress(address string, metricsPort int32) bool {
 }
 
 func serviceAddressOverride(address string, allowKubernetesExpansion bool, metricsPort int32) bool {
+	// The exporter resolves native environment overrides itself. Only allow the
+	// kubelet's argument expansion when the user supplied a container argument.
 	if !allowKubernetesExpansion || !kubernetesEnvExpansion.MatchString(address) {
 		return serviceAddress(address, metricsPort)
 	}
