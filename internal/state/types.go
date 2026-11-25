@@ -98,15 +98,20 @@ type dcgmExporterRenderData struct {
 	OpenshiftVersion string
 	// ResourceClaimAPIVersion is the apiVersion to render on ResourceClaimTemplate objects.
 	ResourceClaimAPIVersion      string
-	RemoteHostEngine             string
-	Collectors                   string
+	ConfigFileEnvName            string
+	ConfigFileDirectory          string
+	ConfigFileName               string
+	ConfigFilePath               string
+	ConfigVolumeName             string
+	ConfigAnnotation             string
+	PodAnnotations               map[string]string
 	HPCJobMappingDir             string
-	PodLabelAllowlistRegex       string
-	EnablePodLabels              bool
-	EnablePodUID                 bool
 	HostPID                      bool
 	HostNetwork                  bool
 	MetricsConfigName            string
+	MetricsConfigMountDirectory  string
+	HealthPort                   int32
+	HealthPortName               string
 	ServiceMonitorEnabled        bool
 	PodResourcesDir              string
 	ServiceType                  string

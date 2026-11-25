@@ -48,6 +48,16 @@ Helm installations run one operator replica by default. Increase `operator.repli
 
 OLM installations continue to deploy one operator replica and do not include the Helm chart's PDB or pod anti-affinity. Helm values do not configure OLM installations. Administrators can manually increase replicas and add anti-affinity through the installed ClusterServiceVersion (CSV), then create a PDB separately, following `deployments/gpu-operator/templates/poddisruptionbudget.yaml`.
 
+## DCGM Exporter 4.10 compatibility
+
+The GPU Operator's DCGM Exporter 4.10.0 integration uses the exporter's v2 configuration file. At minimum, a custom exporter image must read v2 YAML from `DCGM_EXPORTER_CONFIG_FILE`, expose metrics on port `9400`, and provide a dedicated HTTP health listener on port `9401` with `/healthz` for startup and liveness probes and `/readyz` for readiness. When `dcgmExporter.hostNetwork` is enabled, the Operator probes health on `127.0.0.1:9401`, so the custom image must serve health on loopback or all interfaces. This integration does not provide a legacy configuration mode; to roll back, restore the prior GPU Operator version and its matching exporter configuration instead of pinning an older exporter image under the new integration.
+
+The Operator cannot determine whether a Kubernetes-expanded `--remote-hostengine-info=$(VAR)` argument resolves to a loopback hostengine. Set `dcgmExporter.hostNetwork` explicitly when the expanded value points to loopback.
+
+Custom metrics ConfigMaps continue to use the `dcgm-metrics.csv` key. The file is now mounted at `/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv`; update any custom collector setting that refers to the former `/etc/dcgm-exporter/dcgm-metrics.csv` path.
+
+The default PCIe throughput metric names change to `DCGM_FI_PROF_PCIE_TX_BYTES_PER_SECOND` and `DCGM_FI_PROF_PCIE_RX_BYTES_PER_SECOND`. Their values remain rates in bytes per second. Update dashboards and alerts that use the previous `DCGM_FI_PROF_PCIE_TX_BYTES` or `DCGM_FI_PROF_PCIE_RX_BYTES` names.
+
 
 ## Product Documentation
 For information on platform support and getting started, visit the official documentation [repository](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/overview.html).

@@ -31,7 +31,7 @@ spec:
     enabled: false
     repository: nvcr.io/nvidia/cloud-native
     image: dcgm
-    version: 4.5.2-1-ubuntu22.04
+    version: 4.8.0-ubuntu24.04
     imagePullPolicy: IfNotPresent
     imagePullSecrets: []
     args: []
@@ -42,7 +42,7 @@ spec:
     enabled: true
     repository: nvcr.io/nvidia/k8s
     image: dcgm-exporter
-    version: 4.5.1-4.8.0-distroless
+    version: 4.10.0
     imagePullPolicy: IfNotPresent
     imagePullSecrets: []
     args: []

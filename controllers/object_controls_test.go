@@ -52,6 +52,7 @@ import (
 	gpuv1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	nvidiav1alpha1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1alpha1"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 )
 
 const (
@@ -1763,8 +1764,29 @@ func getDCGMExporterTestInput(testCase string) *gpuv1.ClusterPolicy {
 		cp.Spec.DCGMExporter.EnablePodUID = new(true)
 	case "pod-labels-env":
 		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
-			{Name: "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS", Value: "true"},
+			{Name: DCGMExporterPodLabelsEnvName, Value: "true"},
 		}
+	case "pod-labels-env-one":
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodLabelsEnvName, Value: "1"},
+		}
+	case "pod-labels-args":
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels"}
+	case "pod-uid-args":
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-uid"}
+	case "pod-labels-arg-false":
+		cp.Spec.DCGMExporter.EnablePodLabels = new(true)
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels=false"}
+	case "pod-uid-env-false":
+		cp.Spec.DCGMExporter.EnablePodUID = new(true)
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodUIDEnvName, Value: "false"},
+		}
+	case "pod-labels-arg-over-env-false":
+		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
+			{Name: DCGMExporterPodLabelsEnvName, Value: "false"},
+		}
+		cp.Spec.DCGMExporter.Args = []string{"--kubernetes-enable-pod-labels"}
 	case "configmap-data-env":
 		cp.Spec.DCGMExporter.Env = []gpuv1.EnvVar{
 			{Name: "DCGM_EXPORTER_CONFIGMAP_DATA", Value: "gpu-operator:custom-metrics"},
@@ -1790,32 +1812,67 @@ func getDCGMExporterTestOutput(testCase string) map[string]any {
 
 	switch testCase {
 	case "default":
-		output["env"] = map[string]string{}
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
 	case "standalone-dcgm":
 		output["env"] = map[string]string{
-			"DCGM_REMOTE_HOSTENGINE_INFO": "nvidia-dcgm:5555",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 	case "pod-labels-enabled":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS": "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "pod-uid-enabled":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID": "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "pod-labels-env":
 		output["env"] = map[string]string{
-			"DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS": "true",
+			DCGMExporterPodLabelsEnvName:   "true",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-env-one":
+		output["env"] = map[string]string{
+			DCGMExporterPodLabelsEnvName:   "1",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-args":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-labels"}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-uid-args":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-uid"}
+		output["clusterRoleExists"] = true
+		output["automountToken"] = true
+	case "pod-labels-arg-false":
+		output["env"] = map[string]string{dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath}
+		output["args"] = []string{"--kubernetes-enable-pod-labels=false"}
+	case "pod-uid-env-false":
+		output["env"] = map[string]string{
+			DCGMExporterPodUIDEnvName:      "false",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+	case "pod-labels-arg-over-env-false":
+		output["env"] = map[string]string{
+			DCGMExporterPodLabelsEnvName:   "false",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
+		}
+		output["args"] = []string{"--kubernetes-enable-pod-labels"}
 		output["clusterRoleExists"] = true
 		output["automountToken"] = true
 	case "configmap-data-env":
 		output["env"] = map[string]string{
 			"DCGM_EXPORTER_CONFIGMAP_DATA": "gpu-operator:custom-metrics",
+			dcgmexporter.ConfigFileEnvName: dcgmexporter.ConfigFilePath,
 		}
 		output["automountToken"] = true
 	default:
@@ -1859,6 +1916,36 @@ func TestDCGMExporter(t *testing.T) {
 			getDCGMExporterTestOutput("pod-labels-env"),
 		},
 		{
+			"PodLabelsViaEnvOne",
+			getDCGMExporterTestInput("pod-labels-env-one"),
+			getDCGMExporterTestOutput("pod-labels-env-one"),
+		},
+		{
+			"PodLabelsViaArgs",
+			getDCGMExporterTestInput("pod-labels-args"),
+			getDCGMExporterTestOutput("pod-labels-args"),
+		},
+		{
+			"PodUIDViaArgs",
+			getDCGMExporterTestInput("pod-uid-args"),
+			getDCGMExporterTestOutput("pod-uid-args"),
+		},
+		{
+			"PodLabelsArgFalseOverridesTypedField",
+			getDCGMExporterTestInput("pod-labels-arg-false"),
+			getDCGMExporterTestOutput("pod-labels-arg-false"),
+		},
+		{
+			"PodUIDEnvFalseOverridesTypedField",
+			getDCGMExporterTestInput("pod-uid-env-false"),
+			getDCGMExporterTestOutput("pod-uid-env-false"),
+		},
+		{
+			"PodLabelsArgOverridesEnvFalse",
+			getDCGMExporterTestInput("pod-labels-arg-over-env-false"),
+			getDCGMExporterTestOutput("pod-labels-arg-over-env-false"),
+		},
+		{
 			"ConfigMapDataViaEnv",
 			getDCGMExporterTestInput("configmap-data-env"),
 			getDCGMExporterTestOutput("configmap-data-env"),
@@ -1890,14 +1977,21 @@ func TestDCGMExporter(t *testing.T) {
 			for key, value := range tc.output["env"].(map[string]string) {
 				require.Equal(t, value, getContainerEnv(&ds.Spec.Template.Spec.Containers[0], key), "unexpected value for env var %s on daemonset nvidia-dcgm-exporter", key)
 			}
+			if expectedArgs, ok := tc.output["args"]; ok {
+				require.Equal(t, expectedArgs, ds.Spec.Template.Spec.Containers[0].Args)
+			}
 
 			// A slow start gets up to 5 minutes before the liveness probe applies.
 			startupProbe := ds.Spec.Template.Spec.Containers[0].StartupProbe
 			require.NotNil(t, startupProbe, "dcgm-exporter must have a startup probe")
 			require.NotNil(t, startupProbe.HTTPGet)
-			require.Equal(t, "/health", startupProbe.HTTPGet.Path)
+			require.Equal(t, "/healthz", startupProbe.HTTPGet.Path)
+			require.Equal(t, dcgmexporter.HealthPortName, startupProbe.HTTPGet.Port.String())
+			require.Equal(t, "/readyz", ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Path)
+			require.Equal(t, dcgmexporter.HealthPortName, ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Port.String())
 			require.Equal(t, int32(5), startupProbe.PeriodSeconds)
 			require.Equal(t, int32(60), startupProbe.FailureThreshold)
+			require.Equal(t, dcgmexporter.HealthPort, ds.Spec.Template.Spec.Containers[0].Ports[1].ContainerPort)
 
 			// Liveness and readiness start once the startup probe succeeds, so a
 			// delay would only hold back a pod that is already serving.
