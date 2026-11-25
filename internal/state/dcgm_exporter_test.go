@@ -176,6 +176,23 @@ func TestDCGMExporterCustomMetricsConfig(t *testing.T) {
 	}, "the ConfigMap key is projected into its parent directory without subPath")
 }
 
+func TestDCGMExporterCollectorOverrides(t *testing.T) {
+	state := newTestDCGMExporterState(t, false)
+	spec := &nvidiav1.DCGMExporterSpec{
+		MetricsConfig: &nvidiav1.DCGMExporterMetricsConfig{Name: "counters"},
+		Args:          []string{"--collectors=/user/flags.csv"},
+		Env:           []nvidiav1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"}},
+	}
+	objects, err := state.getManifestObjects(context.Background(), exporterCR(spec), draSupportedCatalog())
+	require.NoError(t, err)
+	container := findDaemonSet(t, objects).Spec.Template.Spec.Containers[0]
+	assert.Equal(t, spec.Args, container.Args)
+	assert.Equal(t, "/user/env.csv", envMap(container.Env)["DCGM_EXPORTER_COLLECTORS"])
+	assert.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name: "metrics-config", ReadOnly: true, MountPath: "/etc/dcgm-exporter/operator/metrics",
+	})
+}
+
 func TestDCGMExporterHPCJobMapping(t *testing.T) {
 	s := newTestDCGMExporterState(t, false)
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{

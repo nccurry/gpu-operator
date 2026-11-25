@@ -1433,6 +1433,28 @@ func TestTransformMPSControlDaemon(t *testing.T) {
 	}
 }
 
+func TestDCGMExporterCollectorOverrides(t *testing.T) {
+	spec := &gpuv1.ClusterPolicySpec{
+		DCGMExporter: gpuv1.DCGMExporterSpec{
+			Repository:    "nvcr.io/nvidia/k8s",
+			Image:         "dcgm-exporter",
+			Version:       "4.9.0",
+			MetricsConfig: &gpuv1.DCGMExporterMetricsConfig{Name: "counters"},
+			Args:          []string{"--collectors=/user/flags.csv"},
+			Env:           []gpuv1.EnvVar{{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"}},
+		},
+	}
+	ds := NewDaemonset().WithContainer(corev1.Container{Name: "dcgm-exporter"})
+	err := TransformDCGMExporter(ds.DaemonSet, spec, ClusterPolicyController{runtime: gpuv1.Containerd, logger: ctrl.Log.WithName("test")})
+	require.NoError(t, err)
+	container := ds.Spec.Template.Spec.Containers[0]
+	require.Equal(t, spec.DCGMExporter.Args, container.Args)
+	require.Contains(t, container.Env, corev1.EnvVar{Name: "DCGM_EXPORTER_COLLECTORS", Value: "/user/env.csv"})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{
+		Name: "metrics-config", ReadOnly: true, MountPath: "/etc/dcgm-exporter/operator/metrics",
+	})
+}
+
 func TestTransformDCGMExporter(t *testing.T) {
 	testCases := []struct {
 		description      string
