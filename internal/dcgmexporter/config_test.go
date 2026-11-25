@@ -17,6 +17,8 @@
 package dcgmexporter
 
 import (
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -49,8 +51,8 @@ func TestRenderConfigDefaults(t *testing.T) {
 	prometheus := outputs["prometheus"].(map[string]any)
 	assert.Equal(t, metricsType, prometheus["type"])
 	assert.Equal(t, metricsSchema, prometheus["schema"])
-	assert.Equal(t, metricsListenAddress, prometheus["listen"])
-	assert.Equal(t, ":9401", config["server"].(map[string]any)["listen_health"])
+	assert.Equal(t, defaultPortAddress(t, "", MetricsPortName), prometheus["listen"])
+	assert.Equal(t, defaultPortAddress(t, "", HealthPortName), config["server"].(map[string]any)["listen_health"])
 }
 
 func TestRenderConfigUsesOperatorInputs(t *testing.T) {
@@ -79,7 +81,7 @@ func TestRenderConfigUsesOperatorInputs(t *testing.T) {
 	kubernetes := sources["kubernetes"].(map[string]any)
 	assert.Equal(t, true, kubernetes["pod_uid"])
 	assert.Equal(t, map[string]any{"enabled": true, "allow": []any{".*"}}, kubernetes["pod_labels"])
-	assert.Equal(t, "127.0.0.1:9401", config["server"].(map[string]any)["listen_health"])
+	assert.Equal(t, defaultPortAddress(t, "127.0.0.1", HealthPortName), config["server"].(map[string]any)["listen_health"])
 }
 
 func TestConfigOptionsFromSpecPreservesOverrides(t *testing.T) {
@@ -259,6 +261,9 @@ func TestValidateConfigAnnotationReservesItsKey(t *testing.T) {
 }
 
 func TestValidateUserOverrides(t *testing.T) {
+	metricsPort, err := DefaultMetricsPort()
+	require.NoError(t, err)
+	metricsLoopbackAddress := defaultPortAddress(t, "127.0.0.1", MetricsPortName)
 	tests := map[string]struct {
 		args []string
 		env  []gpuv1.EnvVar
@@ -281,19 +286,19 @@ func TestValidateUserOverrides(t *testing.T) {
 			want: ConfigFileEnvName,
 		},
 		"listener conflicts with Service": {
-			args: []string{"--address", ":9500"},
+			args: []string{"--address", fmt.Sprintf(":%d", metricsPort+1)},
 			want: "--address",
 		},
 		"address short alias with incompatible port": {
-			args: []string{"--a", ":9500"},
+			args: []string{"--a", fmt.Sprintf(":%d", metricsPort+1)},
 			want: "--a",
 		},
 		"listener host conflicts with Service": {
-			env:  []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: "127.0.0.1:9400"}},
+			env:  []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: metricsLoopbackAddress}},
 			want: metricsListenEnvName,
 		},
 		"expanded listener with wrong numeric port": {
-			args: []string{"--address", "$(EXPORTER_HOST):9500"},
+			args: []string{"--address", fmt.Sprintf("$(EXPORTER_HOST):%d", metricsPort+1)},
 			want: "--address",
 		},
 		"expanded listener with non-numeric port": {
@@ -303,6 +308,10 @@ func TestValidateUserOverrides(t *testing.T) {
 		"expanded listener in environment": {
 			env:  []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: "$(EXPORTER_LISTEN_ADDRESS)"}},
 			want: metricsListenEnvName,
+		},
+		"CLI expansion with a conflicting literal port": {
+			args: []string{"--address", "$(METRICS_HOST):1234"},
+			want: "--address",
 		},
 		"former CSV path needs migration": {
 			args: []string{"-f", oldMetricsFilePath},
@@ -324,20 +333,27 @@ func TestValidateUserOverrides(t *testing.T) {
 }
 
 func TestValidateUserOverridesAllowsCompatibleOptions(t *testing.T) {
+	metricsPort, err := DefaultMetricsPort()
+	require.NoError(t, err)
+	metricsAddress := defaultPortAddress(t, "", MetricsPortName)
+	metricsIPv4Address := defaultPortAddress(t, "0.0.0.0", MetricsPortName)
+	metricsIPv6Address := defaultPortAddress(t, "::", MetricsPortName)
 	for _, test := range []struct {
 		name string
 		args []string
 		env  []gpuv1.EnvVar
 	}{
 		{name: "no overrides"},
-		{name: "metrics wildcard listener", args: []string{"--address", ":9400"}},
-		{name: "metrics IPv4 wildcard listener", env: []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: "0.0.0.0:9400"}}},
-		{name: "metrics IPv6 wildcard listener", args: []string{"-a", "[::]:9400"}},
+		{name: "metrics wildcard listener", args: []string{"--address", metricsAddress}},
+		{name: "metrics address alias", args: []string{"--a", metricsAddress}},
+		{name: "metrics IPv4 wildcard listener", env: []gpuv1.EnvVar{{Name: metricsListenEnvName, Value: metricsIPv4Address}}},
+		{name: "metrics IPv6 wildcard listener", args: []string{"-a", metricsIPv6Address}},
 		{name: "Kubernetes-expanded listener", args: []string{"--address", "$(EXPORTER_LISTEN_ADDRESS)"}},
 		{name: "Kubernetes-expanded listener equals form", args: []string{"--address=$(EXPORTER_LISTEN_ADDRESS)"}},
-		{name: "Kubernetes-expanded host with Service port", args: []string{"--address", "$(EXPORTER_HOST):9400"}},
+		{name: "Kubernetes-expanded host with Service port", args: []string{"--address", fmt.Sprintf("$(EXPORTER_HOST):%d", metricsPort)}},
 		{name: "Kubernetes-expanded port with wildcard host", args: []string{"--address", "0.0.0.0:$(EXPORTER_PORT)"}},
 		{name: "operator metrics path", args: []string{"--collectors=" + CustomMetricsFilePath}},
+		{name: "operator metrics path alias", args: []string{"--f", CustomMetricsFilePath}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			require.NoError(t, ValidateUserOverrides(test.args, test.env))
@@ -346,10 +362,31 @@ func TestValidateUserOverridesAllowsCompatibleOptions(t *testing.T) {
 }
 
 func TestServiceAddressRequiresLiteralWildcardAndPort(t *testing.T) {
-	for _, address := range []string{"$(EXPORTER_LISTEN_ADDRESS)", "$(EXPORTER_HOST):9400"} {
-		assert.False(t, serviceAddress(address), "serviceAddress must only validate literal listeners")
+	metricsPort, err := DefaultMetricsPort()
+	require.NoError(t, err)
+	for _, address := range []string{"$(EXPORTER_LISTEN_ADDRESS)", fmt.Sprintf("$(EXPORTER_HOST):%d", metricsPort)} {
+		assert.False(t, serviceAddress(address, metricsPort), "serviceAddress must only validate literal listeners")
 	}
-	assert.True(t, serviceAddress(":9400"))
+	assert.True(t, serviceAddress(fmt.Sprintf(":%d", metricsPort), metricsPort))
+}
+
+func TestServiceAddressUsesConfiguredPort(t *testing.T) {
+	const configuredPort = 12345
+
+	assert.True(t, serviceAddress(":12345", configuredPort))
+	assert.True(t, serviceAddress("0.0.0.0:12345", configuredPort))
+	assert.True(t, serviceAddress("[::]:12345", configuredPort))
+	assert.False(t, serviceAddress(":9400", configuredPort))
+	assert.False(t, serviceAddress("$(EXPORTER_PORT)", configuredPort))
+}
+
+func defaultPortAddress(t *testing.T, host, name string) string {
+	t.Helper()
+	defaults, err := DefaultDeploymentDefaults()
+	require.NoError(t, err)
+	port, err := defaults.Port(name)
+	require.NoError(t, err)
+	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
 }
 
 func parseConfig(t *testing.T, content []byte) map[string]any {

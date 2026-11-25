@@ -18,6 +18,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -101,6 +103,12 @@ func TestDCGMExporterEnabledByDefault(t *testing.T) {
 	assert.True(t, *podSpec.AutomountServiceAccountToken)
 
 	ctr := podSpec.Containers[0]
+	defaults, err := dcgmexporter.DefaultDeploymentDefaults()
+	require.NoError(t, err)
+	metricsPort, err := defaults.Port(dcgmexporter.MetricsPortName)
+	require.NoError(t, err)
+	healthPort, err := defaults.Port(dcgmexporter.HealthPortName)
+	require.NoError(t, err)
 	assert.Equal(t, "nvcr.io/nvidia/k8s/dcgm-exporter:4.5.3", ctr.Image)
 	env := envMap(ctr.Env)
 	assert.Equal(t, dcgmexporter.ConfigFilePath, env[dcgmexporter.ConfigFileEnvName])
@@ -124,9 +132,19 @@ func TestDCGMExporterEnabledByDefault(t *testing.T) {
 	_, hasRemote := env["DCGM_REMOTE_HOSTENGINE_INFO"]
 	assert.False(t, hasRemote, "exporter must run embedded when standalone DCGM is disabled")
 	assert.NotContains(t, ds.Spec.Template.Annotations, "nvidia.com/dcgm-exporter-config-hash")
-	assert.Equal(t, int32(9401), ctr.Ports[1].ContainerPort)
+	assert.Equal(t, defaults.Ports, ctr.Ports)
+	assert.Equal(t, metricsPort, ctr.Ports[0].ContainerPort)
+	assert.Equal(t, healthPort, ctr.Ports[1].ContainerPort)
+	assert.Equal(t, defaults.StartupProbe, ctr.StartupProbe)
+	assert.Equal(t, defaults.LivenessProbe, ctr.LivenessProbe)
+	assert.Equal(t, defaults.ReadinessProbe, ctr.ReadinessProbe)
 	assert.Equal(t, dcgmexporter.HealthPortName, ctr.ReadinessProbe.HTTPGet.Port.String())
-	assert.Equal(t, "/readyz", ctr.ReadinessProbe.HTTPGet.Path)
+	service := &corev1.Service{}
+	require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(findByKind(objs, "Service").Object, service))
+	require.Len(t, service.Spec.Ports, 1)
+	assert.Equal(t, "gpu-metrics", service.Spec.Ports[0].Name)
+	assert.Equal(t, int32(9400), service.Spec.Ports[0].Port)
+	assert.Equal(t, intstr.FromString(dcgmexporter.MetricsPortName), service.Spec.Ports[0].TargetPort)
 
 	require.Len(t, ctr.Resources.Claims, 1)
 	assert.Equal(t, "admin-gpus", ctr.Resources.Claims[0].Name)
@@ -355,16 +373,20 @@ func TestDCGMExporterLoopbackOverridesUseLoopbackHealthProbes(t *testing.T) {
 	assert.True(t, ds.Spec.Template.Spec.HostNetwork)
 	assert.Equal(t, corev1.DNSClusterFirstWithHostNet, ds.Spec.Template.Spec.DNSPolicy)
 	assert.Equal(t, "127.0.0.1", ds.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Host)
-	assert.Contains(t, exporterConfig(t, objs), "listen_health: 127.0.0.1:9401")
+	healthPort, err := dcgmexporter.DefaultHealthPort()
+	require.NoError(t, err)
+	assert.Contains(t, exporterConfig(t, objs), fmt.Sprintf("listen_health: 127.0.0.1:%d", healthPort))
 }
 
 func TestDCGMExporterRejectsManagedConfigOverrides(t *testing.T) {
+	metricsPort, err := dcgmexporter.DefaultMetricsPort()
+	require.NoError(t, err)
 	for _, test := range []struct {
 		name string
 		spec *nvidiav1.DCGMExporterSpec
 	}{
 		{name: "config selector env", spec: &nvidiav1.DCGMExporterSpec{Env: []nvidiav1.EnvVar{{Name: dcgmexporter.ConfigFileEnvName}}}},
-		{name: "listener conflict", spec: &nvidiav1.DCGMExporterSpec{Args: []string{"--address", "127.0.0.1:9400"}}},
+		{name: "listener conflict", spec: &nvidiav1.DCGMExporterSpec{Args: []string{"--address", fmt.Sprintf("127.0.0.1:%d", metricsPort)}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := newTestDCGMExporterState(t, false)

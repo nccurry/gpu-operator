@@ -34,6 +34,11 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         id: install
       - run: helm lint deployments/gpu-operator/
+      - name: Verify exporter defaults against the pinned chart
+        run: |
+          python3 -m pip install PyYAML
+          make update-dcgm-exporter-deployment-defaults
+          git diff --exit-code -- internal/dcgmexporter/deployment_defaults.json
 
   validate-csv:
     runs-on: ubuntu-latest

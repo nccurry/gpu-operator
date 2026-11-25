@@ -1,0 +1,40 @@
+{
+  "_generatedBy": "make update-dcgm-exporter-deployment-defaults",
+  "chartVersion": "4.10.0",
+  "livenessProbe": {
+    "httpGet": {
+      "path": "/healthz",
+      "port": "health",
+      "scheme": "HTTP"
+    },
+    "periodSeconds": 5
+  },
+  "ports": [
+    {
+      "containerPort": 9400,
+      "name": "metrics",
+      "protocol": "TCP"
+    },
+    {
+      "containerPort": 9401,
+      "name": "health",
+      "protocol": "TCP"
+    }
+  ],
+  "readinessProbe": {
+    "httpGet": {
+      "path": "/readyz",
+      "port": "health",
+      "scheme": "HTTP"
+    }
+  },
+  "startupProbe": {
+    "failureThreshold": 60,
+    "httpGet": {
+      "path": "/healthz",
+      "port": "health",
+      "scheme": "HTTP"
+    },
+    "periodSeconds": 5
+  }
+}

@@ -18,5 +18,5 @@ spec:
   ports:
   - name: gpu-metrics
     port: 9400
-    targetPort: 9400
+    targetPort: metrics
     protocol: TCP

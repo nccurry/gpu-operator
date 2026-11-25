@@ -17,6 +17,7 @@
 package state
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -110,8 +111,7 @@ type dcgmExporterRenderData struct {
 	HostNetwork                  bool
 	MetricsConfigName            string
 	MetricsConfigMountDirectory  string
-	HealthPort                   int32
-	HealthPortName               string
+	ContainerDefaults            *corev1.Container
 	ServiceMonitorEnabled        bool
 	PodResourcesDir              string
 	ServiceType                  string

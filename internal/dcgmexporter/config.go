@@ -49,19 +49,15 @@ const (
 	CustomMetricsFilePath = "/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv"
 	// HealthPortName is the named port used by the exporter HTTP probes.
 	HealthPortName = "health"
-	// HealthPort is the dedicated health listener port.
-	HealthPort int32 = 9401
 )
 
 const (
-	metricsListenAddress = ":9400"
-	metricsPort          = 9400
-	metricsType          = "prometheus"
-	metricsSchema        = "dcgm/v1"
-	oldMetricsFilePath   = "/etc/dcgm-exporter/dcgm-metrics.csv"
-	remoteHostEngineEnv  = "DCGM_REMOTE_HOSTENGINE_INFO"
-	podLabelsEnvName     = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS"
-	podUIDEnvName        = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID"
+	metricsType         = "prometheus"
+	metricsSchema       = "dcgm/v1"
+	oldMetricsFilePath  = "/etc/dcgm-exporter/dcgm-metrics.csv"
+	remoteHostEngineEnv = "DCGM_REMOTE_HOSTENGINE_INFO"
+	podLabelsEnvName    = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS"
+	podUIDEnvName       = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID"
 )
 
 // ConfigOptions contains settings that the Operator owns in exporter config.
@@ -78,6 +74,19 @@ type ConfigOptions struct {
 
 // RenderConfig returns a v2 exporter configuration file.
 func RenderConfig(options ConfigOptions) ([]byte, error) {
+	defaults, err := DefaultDeploymentDefaults()
+	if err != nil {
+		return nil, err
+	}
+	metricsPort, err := defaults.Port(MetricsPortName)
+	if err != nil {
+		return nil, err
+	}
+	healthPort, err := defaults.Port(HealthPortName)
+	if err != nil {
+		return nil, err
+	}
+
 	metricsFile := options.MetricsFilePath
 	if metricsFile == "" {
 		metricsFile = DefaultMetricsFilePath
@@ -121,10 +130,11 @@ func RenderConfig(options ConfigOptions) ([]byte, error) {
 		sources["hpc_jobs"] = map[string]any{"mapping_dir": options.HPCJobMappingDir}
 	}
 
-	healthListen := fmt.Sprintf(":%d", HealthPort)
+	healthListen := fmt.Sprintf(":%d", healthPort)
 	if options.HostNetwork {
-		healthListen = fmt.Sprintf("127.0.0.1:%d", HealthPort)
+		healthListen = fmt.Sprintf("127.0.0.1:%d", healthPort)
 	}
+	metricsListenAddress := fmt.Sprintf(":%d", metricsPort)
 	config := map[string]any{
 		"version": 2,
 		"metrics": []any{

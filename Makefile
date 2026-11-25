@@ -118,6 +118,14 @@ generate-clientset: install-tools
 		--input-base $(CURDIR)/api \
 		--input nvidia/v1,nvidia/v1alpha1
 
+# Refresh the shared exporter port and probe defaults from the pinned public chart.
+# Set DCGM_EXPORTER_CHART to a local chart directory or archive when needed.
+DCGM_EXPORTER_CHART ?=
+.PHONY: update-dcgm-exporter-deployment-defaults
+update-dcgm-exporter-deployment-defaults:
+	python3 .github/scripts/update-dcgm-exporter-deployment-defaults.py \
+		$(if $(DCGM_EXPORTER_CHART),--chart "$(DCGM_EXPORTER_CHART)")
+
 # Generate bundle manifests and metadata, then validate generated files.
 .PHONY: bundle
 bundle: manifests install-tools

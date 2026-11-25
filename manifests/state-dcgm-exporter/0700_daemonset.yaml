@@ -92,35 +92,10 @@ spec:
           value: {{ .ConfigFilePath | quote }}
         securityContext:
           privileged: true
-        ports:
-        - name: "metrics"
-          containerPort: 9400
-        - name: {{ .HealthPortName | quote }}
-          containerPort: {{ .HealthPort }}
-        startupProbe:
-          httpGet:
-            port: {{ .HealthPortName | quote }}
-            path: /healthz
-            {{- if .HostNetwork }}
-            host: 127.0.0.1
-            {{- end }}
-          periodSeconds: 5
-          failureThreshold: 60
-        livenessProbe:
-          httpGet:
-            port: {{ .HealthPortName | quote }}
-            path: /healthz
-            {{- if .HostNetwork }}
-            host: 127.0.0.1
-            {{- end }}
-          periodSeconds: 5
-        readinessProbe:
-          httpGet:
-            port: {{ .HealthPortName | quote }}
-            path: /readyz
-            {{- if .HostNetwork }}
-            host: 127.0.0.1
-            {{- end }}
+        ports: {{ .ContainerDefaults.Ports | toJson }}
+        startupProbe: {{ .ContainerDefaults.StartupProbe | toJson }}
+        livenessProbe: {{ .ContainerDefaults.LivenessProbe | toJson }}
+        readinessProbe: {{ .ContainerDefaults.ReadinessProbe | toJson }}
         resources:
           {{- if .DCGMExporter.Spec.Resources }}
           {{- if .DCGMExporter.Spec.Resources.Limits }}

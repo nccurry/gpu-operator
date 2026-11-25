@@ -47,26 +47,6 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
-        ports:
-        - name: "metrics"
-          containerPort: 9400
-        - name: "health"
-          containerPort: 9401
-        startupProbe:
-          httpGet:
-            port: health
-            path: /healthz
-          periodSeconds: 5
-          failureThreshold: 60
-        livenessProbe:
-          httpGet:
-            port: health
-            path: /healthz
-          periodSeconds: 5
-        readinessProbe:
-          httpGet:
-            port: health
-            path: /readyz
         volumeMounts:
         - name: dcgm-exporter-config
           readOnly: true

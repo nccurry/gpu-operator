@@ -109,7 +109,7 @@ spec:
   - name: gpu-metrics
     port: 9400
     protocol: TCP
-    targetPort: 9400
+    targetPort: metrics
   selector:
     app: nvidia-dcgm-exporter-dra
   type: ClusterIP
@@ -170,17 +170,21 @@ spec:
           httpGet:
             path: /healthz
             port: health
+            scheme: HTTP
           periodSeconds: 5
         name: nvidia-dcgm-exporter-dra
         ports:
         - containerPort: 9400
           name: metrics
+          protocol: TCP
         - containerPort: 9401
           name: health
+          protocol: TCP
         readinessProbe:
           httpGet:
             path: /readyz
             port: health
+            scheme: HTTP
         resources:
           claims:
           - name: admin-gpus
@@ -191,6 +195,7 @@ spec:
           httpGet:
             path: /healthz
             port: health
+            scheme: HTTP
           periodSeconds: 5
         volumeMounts:
         - mountPath: /etc/dcgm-exporter/operator/config
