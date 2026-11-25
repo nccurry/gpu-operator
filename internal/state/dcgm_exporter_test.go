@@ -320,7 +320,7 @@ func TestDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
 	s := newTestDCGMExporterState(t, false)
 	s.client = k8sClient
 	spec := &nvidiav1.DCGMExporterSpec{
-		HostNetwork: ptr.To(false),
+		HostNetwork: new(false),
 		NativeConfig: &corev1.ConfigMapKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
 			Key:                  "exporter.yaml",
@@ -330,7 +330,7 @@ func TestDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
 	_, err = s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
 	require.ErrorContains(t, err, "set dcgmExporter.hostNetwork=true")
 
-	spec.HostNetwork = ptr.To(true)
+	spec.HostNetwork = new(true)
 	objects, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
 	require.NoError(t, err)
 	daemonSet := findDaemonSet(t, objects)

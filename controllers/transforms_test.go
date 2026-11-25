@@ -2356,7 +2356,7 @@ func TestTransformDCGMExporterNativeConfigAndWebConfig(t *testing.T) {
 		Repository:   "nvcr.io/nvidia/cloud-native",
 		Image:        "dcgm-exporter",
 		Version:      "v4.10.0",
-		EnablePodUID: ptr.To(true),
+		EnablePodUID: new(true),
 		NativeConfig: &corev1.ConfigMapKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: "exporter-config-v1"},
 			Key:                  "custom-exporter.yaml",

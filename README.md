@@ -56,6 +56,72 @@ The Operator cannot determine whether a Kubernetes-expanded `--remote-hostengine
 
 Custom metrics ConfigMaps continue to use the `dcgm-metrics.csv` key. The file is now mounted at `/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv`; update any custom collector setting that refers to the former `/etc/dcgm-exporter/dcgm-metrics.csv` path.
 
+### Native configuration and secure scraping
+
+Use `dcgmExporter.nativeConfig` to select a complete v2 configuration from an immutable ConfigMap in the GPU Operator namespace. Use a new ConfigMap name for each revision; changing the reference rolls the exporter Pods.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dcgm-exporter-config-v1
+  namespace: gpu-operator
+immutable: true
+data:
+  exporter.yaml: |
+    version: 2
+    metrics:
+      - name: default
+        file: /etc/dcgm-exporter/default-counters.csv
+        every: 30s
+    outputs:
+      prometheus:
+        type: prometheus
+        schema: dcgm/v1
+        listen: :9400
+    server:
+      listen_health: :9401
+```
+
+Select the ConfigMap key in either `ClusterPolicy` or `GPUCluster`:
+
+```yaml
+spec:
+  dcgmExporter:
+    nativeConfig:
+      name: dcgm-exporter-config-v1
+      key: exporter.yaml
+```
+
+The selected file is mounted at `/etc/dcgm-exporter/operator/config/dcgm-exporter.yaml`. Do not set `DCGM_EXPORTER_CONFIG_FILE` or `--config-file`; the Operator owns that selector. Validate the complete file with the pinned exporter's `config validate` command before selecting it. The Operator checks that its listeners, metrics mount, networking, DRA mode, and enabled Kubernetes metadata match the managed workload. The Prometheus output must be the exporter's supported single output on wildcard port `9400`. The health listener uses port `9401`; with host networking, bind it to `127.0.0.1:9401`. A loopback DCGM host engine also requires `dcgmExporter.hostNetwork: true`.
+
+The existing `dcgmExporter.config` field still selects the custom metrics CSV. When using a custom CSV with native configuration, keep that selector enabled and set the metrics file path to `/etc/dcgm-exporter/operator/metrics/dcgm-metrics.csv` in the native file. On `ClusterPolicy`, native Pod UID or label enrichment also requires the matching `dcgmExporter.enablePodUID` or `dcgmExporter.enablePodLabels` opt-in; configure the label allowlist as needed.
+
+To enable HTTPS or HTTP Basic Authentication for metrics, configure `dcgmExporter.serviceMonitor` with Prometheus Operator's typed TLS and authentication fields. The Operator creates this ServiceMonitor in its namespace, so put its referenced CA and credential Secret keys in that namespace:
+
+```yaml
+spec:
+  dcgmExporter:
+    serviceMonitor:
+      enabled: true
+      tlsConfig:
+        ca:
+          secret:
+            name: dcgm-exporter-scrape
+            key: ca.crt
+      basicAuth:
+        username:
+          name: dcgm-exporter-scrape
+          key: username
+        password:
+          name: dcgm-exporter-scrape
+          key: password
+```
+
+When using exporter web TLS, put the web configuration and its certificate keys in a Secret in the GPU Operator namespace, and select the web configuration key with `dcgmExporter.webConfig`. The selected key is mounted at `/etc/dcgm-exporter/operator/web-config/<key>`; sibling Secret keys are mounted in the same directory, so reference certificate files there from the web configuration. For example, Secret keys `tls.crt` and `tls.key` are available at `/etc/dcgm-exporter/operator/web-config/tls.crt` and `/etc/dcgm-exporter/operator/web-config/tls.key`. Set `server.web_config_file` in the native file to the selected key's full path. If a web-config flag or environment variable is supplied, it must select the same path.
+
+The web-config Secret is mounted into the exporter Pod. The Operator validates its selected key but does not grant the exporter API access to Secrets. Prometheus reads ServiceMonitor CA and BasicAuth references; the Operator does not mount or read those scrape credentials. Setting TLS or BasicAuth enables HTTPS. If `tlsConfig` is omitted, Prometheus keeps normal certificate verification enabled.
+
 The default PCIe throughput metric names change to `DCGM_FI_PROF_PCIE_TX_BYTES_PER_SECOND` and `DCGM_FI_PROF_PCIE_RX_BYTES_PER_SECOND`. Their values remain rates in bytes per second. Update dashboards and alerts that use the previous `DCGM_FI_PROF_PCIE_TX_BYTES` or `DCGM_FI_PROF_PCIE_RX_BYTES` names.
 
 

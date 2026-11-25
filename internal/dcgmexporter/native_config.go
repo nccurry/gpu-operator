@@ -289,7 +289,7 @@ func hasServicePrometheusOutput(outputs map[string]any, metricsPort int32) bool 
 				return false
 			}
 			address = strings.TrimSpace(address)
-			if address != "" && (kubernetesEnvExpansion.MatchString(address) || !metricsAddress(address, metricsPort)) {
+			if address != "" && !serviceAddress(address, metricsPort) {
 				return false
 			}
 		}

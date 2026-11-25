@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -93,7 +92,7 @@ func TestResolveNativeConfig(t *testing.T) {
 	}
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: selector.Name, Namespace: "operator"},
-		Immutable:  ptr.To(true),
+		Immutable:  new(true),
 		Data:       map[string]string{selector.Key: validNativeConfig},
 	}
 	scheme := runtime.NewScheme()
@@ -127,7 +126,7 @@ func TestResolveNativeConfigRejectsInvalidReferences(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "mutable ConfigMap", configMap: validConfigMap(nil, map[string]string{"exporter.yaml": validNativeConfig}), wantErr: "must be immutable"},
-		{name: "missing key", configMap: validConfigMap(ptr.To(true), map[string]string{}), wantErr: "key \"exporter.yaml\" was not found"},
+		{name: "missing key", configMap: validConfigMap(new(true), map[string]string{}), wantErr: "key \"exporter.yaml\" was not found"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(test.configMap).Build()
@@ -183,7 +182,7 @@ func TestValidateNativeConfig(t *testing.T) {
 		},
 		{
 			name:    "wrong version",
-			config:  "version: 1\n" + validNativeConfig[strings.Index(validNativeConfig, "metrics:"):],
+			config:  replaceOnce(validNativeConfig, "version: 2", "version: 1"),
 			wantErr: "version must be 2",
 		},
 		{
