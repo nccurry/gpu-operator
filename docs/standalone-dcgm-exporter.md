@@ -3,7 +3,9 @@
 The GPU Operator normally manages DCGM Exporter as part of the GPU software
 stack. Install the upstream DCGM Exporter Helm chart separately only when you
 want that chart release or GitOps application to own the exporter lifecycle.
-Keep one exporter workload on each GPU node.
+For an existing installation, disable the managed exporter and wait for its
+Pods and scrape targets to disappear before running the Helm install below.
+The handoff procedure includes the reverse steps for rollback.
 
 The commands below use the DCGM Exporter 4.10.0 chart and image. Check the
 release notes for the supported DCGM version pair. For installation
