@@ -39,6 +39,9 @@ helm install --wait --generate-name \
 
 After installation, the GPU Operator and its operands should be up and running.
 
+To run DCGM Exporter as a separately managed Helm or GitOps release, see the
+[independent installation and migration guide](docs/standalone-dcgm-exporter.md).
+
 Note:
 To deploy the GPU Operator on OpenShift, follow the instructions in the [official documentation](https://docs.nvidia.com/datacenter/cloud-native/openshift/latest/steps-overview.html).
 
