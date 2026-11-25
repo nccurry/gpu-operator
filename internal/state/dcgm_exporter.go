@@ -22,15 +22,18 @@ import (
 	"maps"
 	"path/filepath"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	nvidiav1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	nvidiav1alpha1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1alpha1"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
 	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
+	"github.com/NVIDIA/gpu-operator/internal/utils"
 )
 
 const (
@@ -159,9 +162,14 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 	}
 
 	daemonsets := cr.Spec.Daemonsets
+	updateStrategy, err := dcgmExporterUpdateStrategy(&daemonsets)
+	if err != nil {
+		return nil, err
+	}
 	renderData := &dcgmExporterRenderData{
 		DCGMExporter:                 &dcgmExporterSpec{Spec: spec, ImagePath: imagePath},
 		Daemonsets:                   &daemonsets,
+		UpdateStrategy:               updateStrategy,
 		Namespace:                    s.namespace,
 		OpenshiftVersion:             openshiftVersion,
 		ResourceClaimAPIVersion:      apiVersion,
@@ -192,6 +200,25 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		renderData.WebConfigMountDirectory = dcgmexporter.WebConfigDirectory
 	}
 	return renderData, nil
+}
+
+func dcgmExporterUpdateStrategy(daemonsets *nvidiav1.DaemonsetsSpec) (appsv1.DaemonSetUpdateStrategy, error) {
+	if daemonsets.UpdateStrategy == "OnDelete" {
+		return appsv1.DaemonSetUpdateStrategy{Type: appsv1.OnDeleteDaemonSetStrategyType}, nil
+	}
+
+	strategy := appsv1.DaemonSetUpdateStrategy{Type: appsv1.RollingUpdateDaemonSetStrategyType}
+	if daemonsets.RollingUpdate == nil || daemonsets.RollingUpdate.MaxUnavailable == "" {
+		return strategy, nil
+	}
+
+	value, err := utils.ParseMaxUnavailable(daemonsets.RollingUpdate.MaxUnavailable)
+	if err != nil {
+		return appsv1.DaemonSetUpdateStrategy{}, fmt.Errorf("failed to apply rolling update config: %s", err)
+	}
+	strategy.RollingUpdate = &appsv1.RollingUpdateDaemonSet{MaxUnavailable: &value}
+
+	return strategy, nil
 }
 
 // serviceMonitorCRDServed reports whether the cluster serves the monitoring.coreos.com

@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -130,6 +131,7 @@ func TestDCGMExporterEnabledByDefault(t *testing.T) {
 	require.NotNil(t, configVolume.DownwardAPI.Items[0].FieldRef)
 	assert.Equal(t, "metadata.annotations['"+dcgmexporter.ConfigAnnotation+"']", configVolume.DownwardAPI.Items[0].FieldRef.FieldPath)
 	assert.Nil(t, configVolume.ConfigMap)
+	assert.Equal(t, &corev1.SecurityContext{Privileged: new(true)}, ctr.SecurityContext)
 	// Embedded engine: no remote host-engine env.
 	_, hasRemote := env["DCGM_REMOTE_HOSTENGINE_INFO"]
 	assert.False(t, hasRemote, "exporter must run embedded when standalone DCGM is disabled")
@@ -150,6 +152,100 @@ func TestDCGMExporterEnabledByDefault(t *testing.T) {
 
 	require.Len(t, ctr.Resources.Claims, 1)
 	assert.Equal(t, "admin-gpus", ctr.Resources.Claims[0].Name)
+}
+
+func TestDCGMExporterSecurityContext(t *testing.T) {
+	s := newTestDCGMExporterState(t, false)
+	securityContext := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: new(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		ReadOnlyRootFilesystem:   new(true),
+		RunAsGroup:               new(int64(65532)),
+		RunAsNonRoot:             new(true),
+		RunAsUser:                new(int64(65532)),
+	}
+	cr := exporterCR(&nvidiav1.DCGMExporterSpec{SecurityContext: securityContext})
+
+	objects, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+	require.NoError(t, err)
+
+	assert.Equal(t, securityContext, findDaemonSet(t, objects).Spec.Template.Spec.Containers[0].SecurityContext)
+}
+
+func TestDCGMExporterSharedDaemonsetSettings(t *testing.T) {
+	s := newTestDCGMExporterState(t, false)
+	resources := &nvidiav1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+	}
+	fsGroup := int64(2000)
+	cr := exporterCR(&nvidiav1.DCGMExporterSpec{Resources: resources})
+	cr.Spec.Daemonsets.PodSecurityContext = &corev1.PodSecurityContext{FSGroup: &fsGroup}
+	cr.Spec.Daemonsets.PriorityClassName = "exporter-priority"
+	cr.Spec.Daemonsets.Tolerations = []corev1.Toleration{{Key: "exporter-taint", Operator: corev1.TolerationOpExists}}
+	cr.Spec.Daemonsets.UpdateStrategy = "OnDelete"
+
+	objects, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+	require.NoError(t, err)
+
+	daemonset := findDaemonSet(t, objects)
+	podSpec := daemonset.Spec.Template.Spec
+	assert.Equal(t, appsv1.OnDeleteDaemonSetStrategyType, daemonset.Spec.UpdateStrategy.Type)
+	assert.Equal(t, &corev1.PodSecurityContext{FSGroup: &fsGroup}, podSpec.SecurityContext)
+	assert.Equal(t, "exporter-priority", podSpec.PriorityClassName)
+	assert.Equal(t, []corev1.Toleration{{Key: "exporter-taint", Operator: corev1.TolerationOpExists}}, podSpec.Tolerations)
+
+	container := podSpec.Containers[0]
+	assert.Equal(t, resources.Limits, container.Resources.Limits)
+	assert.Equal(t, resources.Requests, container.Resources.Requests)
+	assert.Equal(t, &corev1.SecurityContext{Privileged: new(true)}, container.SecurityContext)
+	require.Len(t, podSpec.ResourceClaims, 1)
+	assert.Equal(t, "admin-gpus", podSpec.ResourceClaims[0].Name)
+	assert.Equal(t, "true", podSpec.NodeSelector["nvidia.com/gpu.deploy.dcgm-exporter-dra"])
+}
+
+func TestDCGMExporterRollingUpdateSettings(t *testing.T) {
+	testCases := map[string]struct {
+		maxUnavailable string
+		wantError      bool
+		wantType       intstr.Type
+		wantInt        int32
+		wantString     string
+	}{
+		"default": {},
+		"number":  {maxUnavailable: "3", wantType: intstr.Int, wantInt: 3},
+		"percent": {maxUnavailable: "25%", wantType: intstr.String, wantString: "25%"},
+		"invalid": {maxUnavailable: "10%abc", wantError: true},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			s := newTestDCGMExporterState(t, false)
+			cr := exporterCR(&nvidiav1.DCGMExporterSpec{})
+			if tc.maxUnavailable != "" {
+				cr.Spec.Daemonsets.RollingUpdate = &nvidiav1.RollingUpdateSpec{MaxUnavailable: tc.maxUnavailable}
+			}
+
+			objects, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+			if tc.wantError {
+				require.ErrorContains(t, err, "failed to apply rolling update config")
+				return
+			}
+			require.NoError(t, err)
+
+			strategy := findDaemonSet(t, objects).Spec.UpdateStrategy
+			assert.Equal(t, appsv1.RollingUpdateDaemonSetStrategyType, strategy.Type)
+			if tc.maxUnavailable == "" {
+				assert.Nil(t, strategy.RollingUpdate)
+				return
+			}
+			require.NotNil(t, strategy.RollingUpdate)
+			require.NotNil(t, strategy.RollingUpdate.MaxUnavailable)
+			assert.Equal(t, tc.wantType, strategy.RollingUpdate.MaxUnavailable.Type)
+			assert.Equal(t, tc.wantInt, strategy.RollingUpdate.MaxUnavailable.IntVal)
+			assert.Equal(t, tc.wantString, strategy.RollingUpdate.MaxUnavailable.StrVal)
+		})
+	}
 }
 
 func TestDCGMExporterDisabled(t *testing.T) {

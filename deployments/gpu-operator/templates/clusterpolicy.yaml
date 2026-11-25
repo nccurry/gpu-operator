@@ -555,6 +555,9 @@ spec:
     {{- if .Values.dcgmExporter.resources }}
     resources: {{ toYaml .Values.dcgmExporter.resources | nindent 6 }}
     {{- end }}
+    {{- if hasKey .Values.dcgmExporter "securityContext" }}
+    securityContext: {{ toYaml .Values.dcgmExporter.securityContext | nindent 6 }}
+    {{- end }}
     {{- if .Values.dcgmExporter.env }}
     env: {{ toYaml .Values.dcgmExporter.env | nindent 6 }}
     {{- end }}

@@ -1459,6 +1459,53 @@ func TestDCGMExporterCollectorOverrides(t *testing.T) {
 	})
 }
 
+func TestTransformDCGMExporterSecurityContext(t *testing.T) {
+	privileged := true
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := true
+	runAsNonRoot := true
+	securityContext := &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+		RunAsNonRoot:             &runAsNonRoot,
+	}
+	testCases := map[string]struct {
+		configured *corev1.SecurityContext
+		want       *corev1.SecurityContext
+	}{
+		"keeps the privileged default when unset": {
+			want: &corev1.SecurityContext{Privileged: &privileged},
+		},
+		"replaces the container context when configured": {
+			configured: securityContext,
+			want:       securityContext,
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			daemonset := NewDaemonset().WithContainer(corev1.Container{
+				Name:            "dcgm-exporter",
+				SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
+			})
+			config := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+				Repository:      "nvcr.io/nvidia/cloud-native",
+				Image:           "dcgm-exporter",
+				Version:         "4.10.0",
+				SecurityContext: tc.configured,
+			}}
+
+			err := TransformDCGMExporter(daemonset.DaemonSet, config, ClusterPolicyController{
+				runtime: gpuv1.Containerd,
+				logger:  ctrl.Log.WithName("test"),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, daemonset.Spec.Template.Spec.Containers[0].SecurityContext)
+		})
+	}
+}
+
 func TestTransformDCGMExporter(t *testing.T) {
 	testCases := []struct {
 		description      string

@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
@@ -1963,6 +1962,9 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 			obj.Spec.Template.Spec.Containers[i].Resources.Requests = config.DCGMExporter.Resources.Requests
 			obj.Spec.Template.Spec.Containers[i].Resources.Limits = config.DCGMExporter.Resources.Limits
 		}
+	}
+	if config.DCGMExporter.SecurityContext != nil {
+		obj.Spec.Template.Spec.Containers[0].SecurityContext = config.DCGMExporter.SecurityContext
 	}
 	// set arguments if specified for exporter container
 	if len(config.DCGMExporter.Args) > 0 {
@@ -4079,15 +4081,9 @@ func applyUpdateStrategyConfig(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolic
 			// disallow setting RollingUpdate strategy with the driver container
 			return nil
 		}
-		var intOrString intstr.IntOrString
-		if strings.HasSuffix(config.Daemonsets.RollingUpdate.MaxUnavailable, "%") {
-			intOrString = intstr.IntOrString{Type: intstr.String, StrVal: config.Daemonsets.RollingUpdate.MaxUnavailable}
-		} else {
-			int64Val, err := strconv.ParseInt(config.Daemonsets.RollingUpdate.MaxUnavailable, 10, 32)
-			if err != nil {
-				return fmt.Errorf("failed to apply rolling update config: %s", err)
-			}
-			intOrString = intstr.IntOrString{Type: intstr.Int, IntVal: int32(int64Val)}
+		intOrString, err := utils.ParseMaxUnavailable(config.Daemonsets.RollingUpdate.MaxUnavailable)
+		if err != nil {
+			return fmt.Errorf("failed to apply rolling update config: %s", err)
 		}
 		rollingUpdateSpec := appsv1.RollingUpdateDaemonSet{MaxUnavailable: &intOrString}
 		obj.Spec.UpdateStrategy = appsv1.DaemonSetUpdateStrategy{Type: appsv1.RollingUpdateDaemonSetStrategyType, RollingUpdate: &rollingUpdateSpec}

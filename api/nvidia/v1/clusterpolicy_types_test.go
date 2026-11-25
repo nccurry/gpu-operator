@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestImagePath(t *testing.T) {
@@ -85,4 +86,19 @@ func TestImagePath(t *testing.T) {
 		assert.Empty(t, path)
 		assert.ErrorContains(t, err, "invalid nil spec")
 	})
+}
+
+func TestDCGMExporterSpecDeepCopySecurityContext(t *testing.T) {
+	runAsNonRoot := true
+	spec := &DCGMExporterSpec{SecurityContext: &corev1.SecurityContext{
+		Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		RunAsNonRoot: &runAsNonRoot,
+	}}
+
+	copy := spec.DeepCopy()
+	*copy.SecurityContext.RunAsNonRoot = false
+	copy.SecurityContext.Capabilities.Drop[0] = "NET_RAW"
+
+	assert.True(t, *spec.SecurityContext.RunAsNonRoot)
+	assert.Equal(t, []corev1.Capability{"ALL"}, spec.SecurityContext.Capabilities.Drop)
 }

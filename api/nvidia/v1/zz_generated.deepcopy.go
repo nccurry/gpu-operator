@@ -446,6 +446,11 @@ func (in *DCGMExporterSpec) DeepCopyInto(out *DCGMExporterSpec) {
 		*out = new(ResourceRequirements)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SecurityContext != nil {
+		in, out := &in.SecurityContext, &out.SecurityContext
+		*out = new(corev1.SecurityContext)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Args != nil {
 		in, out := &in.Args, &out.Args
 		*out = make([]string, len(*in))

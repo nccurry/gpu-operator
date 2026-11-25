@@ -343,6 +343,12 @@ dcgmExporter:
   imagePullPolicy: IfNotPresent
   env: []
   resources: {}
+  # Omit securityContext to keep the privileged exporter default. Setting it
+  # replaces the entire container security context, so {} drops privileged mode.
+  # For pod and DRA attribution, the exporter user must be able to connect to
+  # the kubelet pod-resources socket. Check workload labels after changing UID.
+  # securityContext:
+  #   privileged: true
   hostPID: false
   hostNetwork: false
   # HPC job mapping configuration for correlating GPU metrics with HPC workload manager jobs
