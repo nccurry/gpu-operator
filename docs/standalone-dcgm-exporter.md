@@ -116,8 +116,9 @@ leave `spec.dcgm.enabled: true` while setting
 `spec.dcgmExporter.enabled: false`.
 
 1. Disable the managed exporter in ClusterPolicy or GPUCluster.
-2. Wait for the Operator to remove its exporter DaemonSet, Service, and
-   monitoring resource. Check that its scrape target has disappeared.
+2. Wait for all managed exporter Pods to terminate and for the Operator to
+   remove its exporter DaemonSet, Service, and monitoring resource. Check
+   that its scrape target has disappeared.
 3. Install the upstream Helm chart, or add it to the same GitOps application.
 4. Wait for one ready exporter Pod on each intended GPU node. Check that the
    chart's Service and monitoring configuration produce one scrape target per
@@ -127,8 +128,10 @@ Expect a scrape gap between steps 2 and 4. The independent chart creates its
 own resources and Service identities; update Prometheus selectors or relabeling
 if they depend on the Operator-managed Service or labels.
 
-To roll back, remove the independent Helm release or GitOps application and
-wait for its DaemonSet and Service to disappear. Then re-enable
+To roll back, uninstall the independent Helm release. With GitOps, remove
+only the exporter release declaration, then sync and prune its resources.
+Wait for all independent exporter Pods to terminate and for its DaemonSet,
+Service and scrape target to disappear. Then re-enable
 `spec.dcgmExporter.enabled` in the Operator's source of truth and wait for the
 managed exporter and its scrape target to return. Do not run both exporters on
 the same nodes during the handoff.
