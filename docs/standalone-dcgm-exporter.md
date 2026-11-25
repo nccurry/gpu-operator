@@ -15,7 +15,8 @@ installation guide](https://docs.nvidia.com/datacenter/dcgm/latest/installation/
 ## Install with Helm or GitOps
 
 The chart is published in NVIDIA's `gpu-helm-charts` repository. Pin the chart
-version in Helm or in your GitOps release configuration:
+version in Helm or in your GitOps release configuration. Save the values for
+your cluster as `dcgm-exporter-values.yaml` before running the install command.
 
 ```bash
 helm repo add gpu-helm-charts https://nvidia.github.io/dcgm-exporter/helm-charts
@@ -77,10 +78,10 @@ spec:
 The Operator-managed hostengine Services use port `dcgm` on TCP 5555 and set
 `internalTrafficPolicy: Local`. Use the Service for the active API path:
 
-| Active API | DCGM Service endpoint |
-| --- | --- |
-| ClusterPolicy | `nvidia-dcgm.<operator-namespace>.svc.cluster.local:5555` |
-| GPUCluster | `nvidia-dcgm-dra.<operator-namespace>.svc.cluster.local:5555` |
+| Active API | Exporter node selector (value `"true"`) | DCGM Service endpoint |
+| --- | --- | --- |
+| ClusterPolicy | `nvidia.com/gpu.deploy.dcgm-exporter` | `nvidia-dcgm.<operator-namespace>.svc.cluster.local:5555` |
+| GPUCluster | `nvidia.com/gpu.deploy.dcgm-exporter-dra` | `nvidia-dcgm-dra.<operator-namespace>.svc.cluster.local:5555` |
 
 These examples use the default `cluster.local` DNS suffix. Replace it if your
 cluster uses a different suffix.
