@@ -205,6 +205,19 @@ func TestValidateNativeConfig(t *testing.T) {
 			config: replaceOnce(replaceOnce(validNativeConfig, "  prometheus:\n", "  team_metrics:\n"), "    listen: :9400\n", ""),
 		},
 		{
+			name:   "empty listener uses exporter default",
+			config: replaceOnce(validNativeConfig, "listen: :9400", `listen: ""`),
+		},
+		{
+			name:   "exporter trims whitespace around address",
+			config: replaceOnce(validNativeConfig, "listen: :9400", `listen: " :9400 "`),
+		},
+		{
+			name:    "multiple outputs are unsupported",
+			config:  replaceOnce(validNativeConfig, "  prometheus:\n", "  extra: {type: prometheus}\n  prometheus:\n"),
+			wantErr: "must define a Prometheus output",
+		},
+		{
 			name:    "health port conflicts with probes",
 			config:  replaceOnce(validNativeConfig, "listen_health: :9401", "listen_health: :9501"),
 			wantErr: "must bind the Operator health port 9401",

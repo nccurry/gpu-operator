@@ -301,6 +301,43 @@ func TestDCGMExporterNativeConfigAndWebSecretProjection(t *testing.T) {
 	assert.Equal(t, 0, kindCounts(objs)["ConfigMap"], "native configuration must remain in the selected immutable ConfigMap")
 }
 
+func TestDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{
+		HostEngine:  "localhost:5555",
+		HostNetwork: true,
+		DRA:         true,
+	})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "loopback-config", Namespace: "test-operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	s := newTestDCGMExporterState(t, false)
+	s.client = k8sClient
+	spec := &nvidiav1.DCGMExporterSpec{
+		HostNetwork: ptr.To(false),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+			Key:                  "exporter.yaml",
+		},
+	}
+	cr := exporterCR(spec)
+	_, err = s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+	require.ErrorContains(t, err, "set dcgmExporter.hostNetwork=true")
+
+	spec.HostNetwork = ptr.To(true)
+	objects, err := s.getManifestObjects(context.Background(), cr, draSupportedCatalog())
+	require.NoError(t, err)
+	daemonSet := findDaemonSet(t, objects)
+	assert.True(t, daemonSet.Spec.Template.Spec.HostNetwork)
+	assert.Equal(t, "127.0.0.1", daemonSet.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Host)
+}
+
 func TestDCGMExporterInvalidNativeConfigKeepsPreviousDaemonSet(t *testing.T) {
 	cr := exporterCR(&nvidiav1.DCGMExporterSpec{
 		NativeConfig: &corev1.ConfigMapKeySelector{

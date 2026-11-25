@@ -2562,6 +2562,8 @@ func TestDCGMExporterNativePodMetadataRequiresExplicitRBACOptIn(t *testing.T) {
 	require.Equal(t, existingBinding.RoleRef, retainedBinding.RoleRef)
 	require.Equal(t, existingBinding.Subjects, retainedBinding.Subjects)
 
+	require.NoError(t, k8sClient.Delete(context.Background(), retainedRole))
+	require.NoError(t, k8sClient.Delete(context.Background(), retainedBinding))
 	clusterPolicy.Spec.DCGMExporter.EnablePodUID = new(true)
 	for _, reconcile := range []struct {
 		name string

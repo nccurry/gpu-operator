@@ -386,7 +386,7 @@ dcgmExporter:
     #     secret:
     #       name: dcgm-exporter-ca
     #       key: ca.crt
-    # Set basicAuth to read scrape credentials from Secrets in the Prometheus namespace.
+    # Set basicAuth to read scrape credentials from Secrets in the exporter ServiceMonitor's namespace.
     # basicAuth:
     #   username:
     #     name: dcgm-exporter-scrape
@@ -427,11 +427,11 @@ dcgmExporter:
     key: ""
 
   # Reference a Secret containing a Prometheus web config and any server certificate
-  # files it names. The default key is mounted under
+  # files it names. The selected key is mounted under
   # /etc/dcgm-exporter/operator/web-config. The exporter probes remain on HTTP.
   webConfig:
     name: ""
-    key: web-config.yaml
+    key: ""
 
 gfd:
   enabled: true

@@ -65,7 +65,7 @@ func ValidateUserOverrides(args []string, env []gpuv1.EnvVar) error {
 		return err
 	}
 	if value, source, explicit := effectiveStringOption(args, env, metricsListenEnvName, "--address", "-address", "--a", "-a"); explicit && !serviceAddressOverride(value, strings.HasPrefix(source, "-"), metricsPort) {
-		return fmt.Errorf("%s sets metrics listener %q, which does not match the Operator-managed container port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
+		return fmt.Errorf("%s sets metrics listener %q, which conflicts with the Operator Service because it does not match the Operator-managed container port %d; keep a wildcard listener on port %d", source, value, metricsPort, metricsPort)
 	}
 	if value, source, explicit := effectiveStringOption(args, env, metricsCollectorsEnvName, "--collectors", "-collectors", "--f", "-f"); explicit && value == oldMetricsFilePath {
 		return fmt.Errorf("%s selects the former custom metrics path %q; use %q", source, oldMetricsFilePath, CustomMetricsFilePath)

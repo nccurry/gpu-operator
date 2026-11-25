@@ -2446,6 +2446,54 @@ func TestTransformDCGMExporterNativeConfigAndWebConfig(t *testing.T) {
 	})
 }
 
+func TestTransformDCGMExporterNativeLoopbackRequiresHostNetworkOptIn(t *testing.T) {
+	configBytes, err := dcgmexporter.RenderConfig(dcgmexporter.ConfigOptions{HostEngine: "localhost:5555", HostNetwork: true})
+	require.NoError(t, err)
+	immutable := true
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "loopback-config", Namespace: "operator"},
+		Immutable:  &immutable,
+		Data:       map[string]string{"exporter.yaml": string(configBytes)},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
+	controller := ClusterPolicyController{
+		client:            k8sClient,
+		ctx:               context.Background(),
+		operatorNamespace: "operator",
+		logger:            ctrl.Log.WithName("test"),
+		runtime:           gpuv1.Containerd,
+	}
+	spec := &gpuv1.ClusterPolicySpec{DCGMExporter: gpuv1.DCGMExporterSpec{
+		Repository:  "nvcr.io/nvidia/cloud-native",
+		Image:       "dcgm-exporter",
+		Version:     "v4.10.0",
+		HostNetwork: newBoolPtr(false),
+		NativeConfig: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: configMap.Name},
+			Key:                  "exporter.yaml",
+		},
+	}}
+	newDaemonSet := func() *appsv1.DaemonSet {
+		return NewDaemonset().WithContainer(corev1.Container{
+			Name:           "dcgm-exporter",
+			ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{}}},
+		}).DaemonSet
+	}
+
+	withoutOptIn := newDaemonSet()
+	err = TransformDCGMExporter(withoutOptIn, spec, controller)
+	require.ErrorContains(t, err, "set dcgmExporter.hostNetwork=true")
+	assert.False(t, withoutOptIn.Spec.Template.Spec.HostNetwork)
+
+	spec.DCGMExporter.HostNetwork = newBoolPtr(true)
+	withOptIn := newDaemonSet()
+	require.NoError(t, TransformDCGMExporter(withOptIn, spec, controller))
+	assert.True(t, withOptIn.Spec.Template.Spec.HostNetwork)
+	assert.Equal(t, "127.0.0.1", withOptIn.Spec.Template.Spec.Containers[0].ReadinessProbe.HTTPGet.Host)
+}
+
 func TestTransformDCGM(t *testing.T) {
 	limits := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("100m"),

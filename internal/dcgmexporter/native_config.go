@@ -274,29 +274,26 @@ func nestedMap(parent map[string]any, key string) map[string]any {
 }
 
 func hasServicePrometheusOutput(outputs map[string]any, metricsPort int32) bool {
-	prometheusOutputs := 0
-	for _, value := range outputs {
-		output, ok := value.(map[string]any)
-		if ok && output["type"] == "prometheus" {
-			prometheusOutputs++
-		}
+	if len(outputs) != 1 {
+		return false
 	}
 	for _, value := range outputs {
 		output, ok := value.(map[string]any)
 		if !ok || output["type"] != "prometheus" {
-			continue
+			return false
 		}
-		listen, ok := output["listen"].(string)
-		if !ok {
-			// The exporter defaults one Prometheus output to :9400.
-			if prometheusOutputs == 1 {
-				return true
+		listen, exists := output["listen"]
+		if exists {
+			address, ok := listen.(string)
+			if !ok {
+				return false
 			}
-			continue
+			address = strings.TrimSpace(address)
+			if address != "" && (kubernetesEnvExpansion.MatchString(address) || !metricsAddress(address, metricsPort)) {
+				return false
+			}
 		}
-		if !kubernetesEnvExpansion.MatchString(listen) && metricsAddress(listen, metricsPort) {
-			return true
-		}
+		return true
 	}
 	return false
 }

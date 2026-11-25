@@ -89,6 +89,42 @@ dcgmExporter:
 			wantCR:  "kind: GPUCluster",
 			otherCR: "kind: ClusterPolicy",
 		},
+		{
+			name: "ClusterPolicy empty selectors",
+			values: `clusterPolicy: {deployCR: true}
+gpuCluster: {deployCR: false}
+dcgmExporter: {nativeConfig: {}, webConfig: {}}
+`,
+			wantCR:  "kind: ClusterPolicy",
+			otherCR: "kind: GPUCluster",
+		},
+		{
+			name: "GPUCluster empty selectors",
+			values: `clusterPolicy: {deployCR: false}
+gpuCluster: {deployCR: true}
+driver: {nvidiaDriverCRD: {enabled: true}}
+dcgmExporter: {nativeConfig: {}, webConfig: {}}
+`,
+			wantCR:  "kind: GPUCluster",
+			otherCR: "kind: ClusterPolicy",
+		},
+		{
+			name: "ClusterPolicy selectors missing from older release values",
+			values: `clusterPolicy: {deployCR: true}
+gpuCluster: {deployCR: false}
+`,
+			wantCR:  "kind: ClusterPolicy",
+			otherCR: "kind: GPUCluster",
+		},
+		{
+			name: "GPUCluster selectors missing from older release values",
+			values: `clusterPolicy: {deployCR: false}
+gpuCluster: {deployCR: true}
+driver: {nvidiaDriverCRD: {enabled: true}}
+`,
+			wantCR:  "kind: GPUCluster",
+			otherCR: "kind: ClusterPolicy",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cmd := exec.Command("helm", "template", "gpu-operator", ".", "--namespace", "gpu-operator", "--api-versions", "resource.k8s.io/v1/DeviceClass", "--values", "-")
@@ -97,6 +133,78 @@ dcgmExporter:
 			require.NoError(t, err, string(output))
 			require.Contains(t, string(output), test.wantCR)
 			require.NotContains(t, string(output), test.otherCR)
+		})
+	}
+}
+
+func TestExporterConfigValuesRejectPartialSelectors(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm binary not found in PATH")
+	}
+
+	for _, test := range []struct {
+		name   string
+		values string
+		want   string
+	}{
+		{
+			name: "ClusterPolicy native selector",
+			values: `clusterPolicy: {deployCR: true}
+gpuCluster: {deployCR: false}
+dcgmExporter: {nativeConfig: {name: config-v1}, webConfig: {}}
+`,
+			want: "dcgmExporter.nativeConfig.key is required",
+		},
+		{
+			name: "ClusterPolicy web selector",
+			values: `clusterPolicy: {deployCR: true}
+gpuCluster: {deployCR: false}
+dcgmExporter: {nativeConfig: {}, webConfig: {name: web-v1}}
+`,
+			want: "dcgmExporter.webConfig.key is required",
+		},
+		{
+			name: "GPUCluster native selector",
+			values: `clusterPolicy: {deployCR: false}
+gpuCluster: {deployCR: true}
+driver: {nvidiaDriverCRD: {enabled: true}}
+dcgmExporter: {nativeConfig: {name: config-v1}, webConfig: {}}
+`,
+			want: "dcgmExporter.nativeConfig.key is required",
+		},
+		{
+			name: "GPUCluster web selector",
+			values: `clusterPolicy: {deployCR: false}
+gpuCluster: {deployCR: true}
+driver: {nvidiaDriverCRD: {enabled: true}}
+dcgmExporter: {nativeConfig: {}, webConfig: {name: web-v1}}
+`,
+			want: "dcgmExporter.webConfig.key is required",
+		},
+		{
+			name: "ClusterPolicy web key without name",
+			values: `clusterPolicy: {deployCR: true}
+gpuCluster: {deployCR: false}
+dcgmExporter: {nativeConfig: {}, webConfig: {key: web-config.yaml}}
+`,
+			want: "dcgmExporter.webConfig.name is required",
+		},
+		{
+			name: "GPUCluster web key without name",
+			values: `clusterPolicy: {deployCR: false}
+gpuCluster: {deployCR: true}
+driver: {nvidiaDriverCRD: {enabled: true}}
+dcgmExporter: {nativeConfig: {}, webConfig: {key: web-config.yaml}}
+`,
+			want: "dcgmExporter.webConfig.name is required",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := exec.Command("helm", "template", "gpu-operator", ".", "--namespace", "gpu-operator", "--api-versions", "resource.k8s.io/v1/DeviceClass", "--values", "-")
+			cmd.Stdin = strings.NewReader(test.values)
+			output, err := cmd.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), test.want)
 		})
 	}
 }
