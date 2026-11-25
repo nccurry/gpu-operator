@@ -51,6 +51,7 @@ import (
 	gpuv1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1"
 	driverconfig "github.com/NVIDIA/gpu-operator/internal/config"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 	"github.com/NVIDIA/gpu-operator/internal/utils"
 )
 
@@ -114,8 +115,6 @@ const (
 	MigPartedDefaultConfigMapName = "default-mig-parted-config"
 	// MigDefaultGPUClientsConfigMapName indicates name of ConfigMap containing default gpu-clients
 	MigDefaultGPUClientsConfigMapName = "default-gpu-clients"
-	// DCGMRemoteEngineEnvName indicates env name to specify remote DCGM host engine ip:port
-	DCGMRemoteEngineEnvName = "DCGM_REMOTE_HOSTENGINE_INFO"
 	// DCGMDefaultPort indicates default port bound to DCGM host engine
 	DCGMDefaultPort = 5555
 	// DCGMExporterConfigMapDataEnvName is the env name specifying the namespace:name
@@ -127,14 +126,10 @@ const (
 	DCGMExporterPodLabelsEnvName = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_LABELS"
 	// DCGMExporterPodUIDEnvName is the env name enabling the pod UID label on metrics
 	DCGMExporterPodUIDEnvName = "DCGM_EXPORTER_KUBERNETES_ENABLE_POD_UID"
-	// DCGMExporterPodLabelAllowlistEnvName is the env name holding the exported pod label allowlist
-	DCGMExporterPodLabelAllowlistEnvName = "DCGM_EXPORTER_KUBERNETES_POD_LABEL_ALLOWLIST_REGEX"
 	// GPUDirectRDMAEnabledEnvName indicates if GPU direct RDMA is enabled through GPU operator
 	GPUDirectRDMAEnabledEnvName = "GPU_DIRECT_RDMA_ENABLED"
 	// UseHostMOFEDEnvName indicates if MOFED driver is pre-installed on the host
 	UseHostMOFEDEnvName = "USE_HOST_MOFED"
-	// MetricsConfigMountDir indicates the directory for custom dcgm metrics files.
-	MetricsConfigMountDir = "/etc/dcgm-exporter/operator/metrics"
 	// MetricsConfigFileName indicates custom dcgm metrics file name
 	MetricsConfigFileName = "dcgm-metrics.csv"
 	// NvidiaAnnotationHashKey indicates annotation name for last applied hash by gpu-operator
@@ -469,8 +464,7 @@ func RoleBinding(n ClusterPolicyController) (gpuv1.State, error) {
 
 var rbacGates = map[string]func(*gpuv1.ClusterPolicySpec) bool{
 	"nvidia-dcgm-exporter-read-pods": func(config *gpuv1.ClusterPolicySpec) bool {
-		return config.DCGMExporter.IsKubernetesPodMetadataEnabled() ||
-			dcgmExporterEnvEnablesPodMetadata(config.DCGMExporter.Env)
+		return dcgmexporter.PodMetadataEnabled(&config.DCGMExporter)
 	},
 }
 
@@ -1830,10 +1824,45 @@ func TransformKataDevicePlugin(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolic
 	return nil
 }
 
+func renderClusterPolicyDCGMExporterConfig(config *gpuv1.ClusterPolicySpec, hostNetwork bool) ([]byte, dcgmexporter.ConfigOptions, error) {
+	if err := dcgmexporter.ValidateUserOverrides(config.DCGMExporter.Args, config.DCGMExporter.Env); err != nil {
+		return nil, dcgmexporter.ConfigOptions{}, err
+	}
+
+	hostEngine := ""
+	if config.DCGM.IsEnabled() {
+		hostEngine = fmt.Sprintf("nvidia-dcgm:%d", DCGMDefaultPort)
+	}
+	options := dcgmexporter.ConfigOptionsFromSpec(&config.DCGMExporter, hostEngine, hostNetwork, false)
+	data, err := dcgmexporter.RenderConfig(options)
+	if err != nil {
+		return nil, options, err
+	}
+	return data, options, nil
+}
+
+func setDCGMExporterHealthProbes(container *corev1.Container, hostNetwork bool) {
+	for _, probe := range []*corev1.Probe{container.StartupProbe, container.LivenessProbe, container.ReadinessProbe} {
+		if probe == nil || probe.HTTPGet == nil {
+			continue
+		}
+		probe.HTTPGet.Port = intstr.FromString(dcgmexporter.HealthPortName)
+		probe.HTTPGet.Host = ""
+		if hostNetwork {
+			probe.HTTPGet.Host = "127.0.0.1"
+		}
+	}
+}
+
 // TransformDCGMExporter transforms dcgm exporter daemonset with required config as per ClusterPolicy
 func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpec, n ClusterPolicyController) error {
+	exporterConfig, exporterOptions, err := renderClusterPolicyDCGMExporterConfig(config, config.DCGMExporter.IsHostNetworkEnabled())
+	if err != nil {
+		return err
+	}
+
 	// update validation container
-	err := transformValidationInitContainer(obj, config)
+	err = transformValidationInitContainer(obj, config)
 	if err != nil {
 		return err
 	}
@@ -1870,23 +1899,20 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 		obj.Spec.Template.Spec.Containers[0].Args = config.DCGMExporter.Args
 	}
 
-	// check if DCGM hostengine is enabled as a separate Pod and setup env accordingly
-	if config.DCGM.IsEnabled() {
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), DCGMRemoteEngineEnvName, fmt.Sprintf("nvidia-dcgm:%d", DCGMDefaultPort))
-	} else {
-		// case for DCGM running on the host itself(DGX BaseOS)
-		remoteEngine := getContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), DCGMRemoteEngineEnvName)
-		if remoteEngine != "" && strings.HasPrefix(remoteEngine, "localhost") {
-			// enable hostNetwork for communication with external DCGM using localhost
-			obj.Spec.Template.Spec.HostNetwork = true
-			obj.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
-		}
-	}
-	// set hostNetwork if specified for DCGM Exporter (if it is already enabled above,
-	// do not touch the value)
-	if config.DCGMExporter.IsHostNetworkEnabled() {
+	if exporterOptions.HostNetwork {
 		obj.Spec.Template.Spec.HostNetwork = true
 		obj.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+	} else {
+		obj.Spec.Template.Spec.HostNetwork = false
+		if obj.Spec.Template.Spec.DNSPolicy == corev1.DNSClusterFirstWithHostNet {
+			obj.Spec.Template.Spec.DNSPolicy = corev1.DNSClusterFirst
+		}
+	}
+	setDCGMExporterHealthProbes(&obj.Spec.Template.Spec.Containers[0], exporterOptions.HostNetwork)
+	for i := range obj.Spec.Template.Spec.Containers[0].Ports {
+		if obj.Spec.Template.Spec.Containers[0].Ports[i].Name == dcgmexporter.HealthPortName {
+			obj.Spec.Template.Spec.Containers[0].Ports[i].ContainerPort = dcgmexporter.HealthPort
+		}
 	}
 
 	setNRIPluginAnnotation(&obj.Spec.Template.ObjectMeta, &config.CDI, obj.Spec.Template.Spec.Containers[0].Name)
@@ -1898,14 +1924,8 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 	}
 
 	// configure HPC job mapping if enabled
-	if config.DCGMExporter.IsHPCJobMappingEnabled() {
-		jobMappingDir := config.DCGMExporter.GetHPCJobMappingDirectory()
-		if jobMappingDir == "" {
-			jobMappingDir = gpuv1.DefaultDCGMJobMappingDir
-		}
-
-		// set environment variable for DCGM Exporter
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), "DCGM_HPC_JOB_MAPPING_DIR", jobMappingDir)
+	if exporterOptions.HPCJobMappingDir != "" {
+		jobMappingDir := exporterOptions.HPCJobMappingDir
 
 		// add volumeMount to main container
 		jobMappingVolMount := corev1.VolumeMount{Name: "hpc-job-mapping", ReadOnly: true, MountPath: jobMappingDir}
@@ -1922,29 +1942,16 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 		obj.Spec.Template.Spec.Volumes = append(obj.Spec.Template.Spec.Volumes, jobMappingVol)
 	}
 
-	// Inject pod-metadata enrichment env vars; RBAC is provisioned via the
-	// 0210/0310 assets and the SA token is mounted below.
-	if config.DCGMExporter.IsPodLabelsEnabled() {
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), DCGMExporterPodLabelsEnvName, "true")
-	}
-	if config.DCGMExporter.IsPodUIDEnabled() {
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), DCGMExporterPodUIDEnvName, "true")
-	}
-	if len(config.DCGMExporter.PodLabelAllowlistRegex) > 0 {
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]),
-			DCGMExporterPodLabelAllowlistEnvName,
-			strings.Join(config.DCGMExporter.PodLabelAllowlistRegex, ","))
-	}
-
 	// Override the base asset's automountServiceAccountToken=false when the
 	// configuration reads from the Kubernetes API.
-	if config.DCGMExporter.IsKubernetesPodMetadataEnabled() || dcgmExporterEnvRequiresAPIAccess(config.DCGMExporter.Env) {
+	if dcgmexporter.PodMetadataEnabled(&config.DCGMExporter) || dcgmExporterEnvRequiresAPIAccess(config.DCGMExporter.Env) {
 		obj.Spec.Template.Spec.AutomountServiceAccountToken = new(true)
 	}
 
-	// mount configmap for custom metrics if provided by user
+	// Mount a user-supplied metrics list at its directory-based path so ConfigMap
+	// updates propagate without requiring generated config changes.
 	if config.DCGMExporter.MetricsConfig != nil && config.DCGMExporter.MetricsConfig.Name != "" {
-		metricsConfigVolMount := corev1.VolumeMount{Name: "metrics-config", ReadOnly: true, MountPath: MetricsConfigMountDir}
+		metricsConfigVolMount := corev1.VolumeMount{Name: "metrics-config", ReadOnly: true, MountPath: filepath.Dir(dcgmexporter.CustomMetricsFilePath)}
 		obj.Spec.Template.Spec.Containers[0].VolumeMounts = append(obj.Spec.Template.Spec.Containers[0].VolumeMounts, metricsConfigVolMount)
 
 		metricsConfigVolumeSource := corev1.VolumeSource{
@@ -1962,9 +1969,25 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 		}
 		metricsConfigVol := corev1.Volume{Name: "metrics-config", VolumeSource: metricsConfigVolumeSource}
 		obj.Spec.Template.Spec.Volumes = append(obj.Spec.Template.Spec.Volumes, metricsConfigVol)
-
-		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), "DCGM_EXPORTER_COLLECTORS", filepath.Join(MetricsConfigMountDir, MetricsConfigFileName))
 	}
+
+	configVolume := corev1.Volume{
+		Name: dcgmexporter.ConfigVolumeName,
+		VolumeSource: corev1.VolumeSource{DownwardAPI: &corev1.DownwardAPIVolumeSource{
+			Items: []corev1.DownwardAPIVolumeFile{{
+				Path: dcgmexporter.ConfigFileName,
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.annotations['" + dcgmexporter.ConfigAnnotation + "']",
+				},
+			}},
+		}},
+	}
+	upsertPodVolume(&obj.Spec.Template.Spec, configVolume)
+	upsertContainerVolumeMount(&obj.Spec.Template.Spec.Containers[0], corev1.VolumeMount{
+		Name:      dcgmexporter.ConfigVolumeName,
+		ReadOnly:  true,
+		MountPath: dcgmexporter.ConfigFileDirectory,
+	})
 
 	const podResourcesVolume = "pod-gpu-resources"
 	kubeletRootDir := config.HostPaths.KubeletRootDir
@@ -1981,33 +2004,49 @@ func TransformDCGMExporter(obj *appsv1.DaemonSet, config *gpuv1.ClusterPolicySpe
 	for _, env := range config.DCGMExporter.Env {
 		setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), env.Name, env.Value)
 	}
+	setContainerEnv(&(obj.Spec.Template.Spec.Containers[0]), dcgmexporter.ConfigFileEnvName, dcgmexporter.ConfigFilePath)
+
+	if obj.Spec.Template.Annotations == nil {
+		obj.Spec.Template.Annotations = make(map[string]string)
+	}
+	// Global annotations take precedence when preProcessDaemonSet finishes.
+	// Validate that final set before projecting the configuration.
+	maps.Copy(obj.Spec.Template.Annotations, config.Daemonsets.Annotations)
+	if err := dcgmexporter.ValidateConfigAnnotation(exporterConfig, obj.Spec.Template.Annotations); err != nil {
+		return err
+	}
+	obj.Spec.Template.Annotations[dcgmexporter.ConfigAnnotation] = string(exporterConfig)
 
 	return nil
+}
+
+func upsertPodVolume(podSpec *corev1.PodSpec, volume corev1.Volume) {
+	for i := range podSpec.Volumes {
+		if podSpec.Volumes[i].Name == volume.Name {
+			podSpec.Volumes[i] = volume
+			return
+		}
+	}
+	podSpec.Volumes = append(podSpec.Volumes, volume)
+}
+
+func upsertContainerVolumeMount(container *corev1.Container, mount corev1.VolumeMount) {
+	for i := range container.VolumeMounts {
+		if container.VolumeMounts[i].Name == mount.Name {
+			container.VolumeMounts[i] = mount
+			return
+		}
+	}
+	container.VolumeMounts = append(container.VolumeMounts, mount)
 }
 
 // dcgmExporterEnvRequiresAPIAccess returns true if a user-provided env var makes
 // dcgm-exporter read from the Kubernetes API.
 func dcgmExporterEnvRequiresAPIAccess(envs []gpuv1.EnvVar) bool {
-	if dcgmExporterEnvEnablesPodMetadata(envs) {
-		return true
-	}
 	for _, env := range envs {
 		if env.Name == DCGMExporterConfigMapDataEnvName {
 			// the exporter treats "none" and "" as no ConfigMap read
 			if env.Value != "" && env.Value != DCGMExporterUndefinedConfigMapData {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// dcgmExporterEnvEnablesPodMetadata returns true if a user-provided env var turns
-// on pod metadata enrichment.
-func dcgmExporterEnvEnablesPodMetadata(envs []gpuv1.EnvVar) bool {
-	for _, env := range envs {
-		if env.Name == DCGMExporterPodLabelsEnvName || env.Name == DCGMExporterPodUIDEnvName {
-			if strings.EqualFold(env.Value, "true") {
 				return true
 			}
 		}

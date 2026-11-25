@@ -18,8 +18,8 @@ package state
 
 import (
 	"context"
+	"maps"
 	"path/filepath"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -28,6 +28,7 @@ import (
 
 	nvidiav1alpha1 "github.com/NVIDIA/gpu-operator/api/nvidia/v1alpha1"
 	"github.com/NVIDIA/gpu-operator/internal/consts"
+	"github.com/NVIDIA/gpu-operator/internal/dcgmexporter"
 )
 
 const (
@@ -39,11 +40,7 @@ const (
 	// hostengine Service (manifests/state-dcgm/0600_service.yaml).
 	dcgmRemoteHostEngine = "nvidia-dcgm-dra:5555"
 
-	dcgmExporterDefaultCollectors     = "/etc/dcgm-exporter/default-counters.csv"
-	dcgmExporterCustomCollectorsDir   = "/etc/dcgm-exporter/operator/metrics"
-	dcgmExporterCustomCollectorsKey   = "dcgm-metrics.csv"
 	dcgmExporterDefaultKubeletRootDir = "/var/lib/kubelet"
-	dcgmExporterDefaultJobMappingDir  = "/var/lib/dcgm-exporter/job-mapping"
 )
 
 func NewStateDCGMExporter(
@@ -73,6 +70,9 @@ func NewStateDCGMExporter(
 
 func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *nvidiav1alpha1.GPUCluster, imagePath, apiVersion, openshiftVersion string) (any, error) {
 	spec := cr.Spec.DCGMExporter
+	if err := dcgmexporter.ValidateUserOverrides(spec.Args, spec.Env); err != nil {
+		return nil, err
+	}
 
 	// When standalone DCGM is enabled the exporter targets it; otherwise it runs embedded.
 	remoteHostEngine := ""
@@ -80,19 +80,9 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		remoteHostEngine = dcgmRemoteHostEngine
 	}
 
-	collectors := dcgmExporterDefaultCollectors
 	metricsConfigName := ""
 	if spec.MetricsConfig != nil && spec.MetricsConfig.Name != "" {
 		metricsConfigName = spec.MetricsConfig.Name
-		collectors = filepath.Join(dcgmExporterCustomCollectorsDir, dcgmExporterCustomCollectorsKey)
-	}
-
-	hpcJobMappingDir := ""
-	if spec.IsHPCJobMappingEnabled() {
-		hpcJobMappingDir = spec.GetHPCJobMappingDirectory()
-		if hpcJobMappingDir == "" {
-			hpcJobMappingDir = dcgmExporterDefaultJobMappingDir
-		}
 	}
 
 	kubeletRootDir := cr.Spec.HostPaths.KubeletRootDir
@@ -109,6 +99,20 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 			"ServiceMonitor CRD not served; skipping dcgm-exporter ServiceMonitor creation")
 		serviceMonitorEnabled = false
 	}
+
+	configOptions := dcgmexporter.ConfigOptionsFromSpec(spec, remoteHostEngine, spec.IsHostNetworkEnabled(), true)
+	exporterConfig, err := dcgmexporter.RenderConfig(configOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	podAnnotations := make(map[string]string, len(cr.Spec.Daemonsets.Annotations)+len(spec.Annotations)+1)
+	maps.Copy(podAnnotations, cr.Spec.Daemonsets.Annotations)
+	maps.Copy(podAnnotations, spec.Annotations)
+	if err := dcgmexporter.ValidateConfigAnnotation(exporterConfig, podAnnotations); err != nil {
+		return nil, err
+	}
+	podAnnotations[dcgmexporter.ConfigAnnotation] = string(exporterConfig)
 
 	serviceType := "ClusterIP"
 	serviceInternalTrafficPolicy := ""
@@ -128,15 +132,20 @@ func buildDCGMExporterRenderData(ctx context.Context, s *configurableState, cr *
 		Namespace:                    s.namespace,
 		OpenshiftVersion:             openshiftVersion,
 		ResourceClaimAPIVersion:      apiVersion,
-		RemoteHostEngine:             remoteHostEngine,
-		Collectors:                   collectors,
-		HPCJobMappingDir:             hpcJobMappingDir,
-		PodLabelAllowlistRegex:       strings.Join(spec.PodLabelAllowlistRegex, ","),
-		EnablePodLabels:              spec.IsPodLabelsEnabled(),
-		EnablePodUID:                 spec.IsPodUIDEnabled(),
+		ConfigFileEnvName:            dcgmexporter.ConfigFileEnvName,
+		ConfigFileDirectory:          dcgmexporter.ConfigFileDirectory,
+		ConfigFileName:               dcgmexporter.ConfigFileName,
+		ConfigFilePath:               dcgmexporter.ConfigFilePath,
+		ConfigVolumeName:             dcgmexporter.ConfigVolumeName,
+		ConfigAnnotation:             dcgmexporter.ConfigAnnotation,
+		PodAnnotations:               podAnnotations,
+		HPCJobMappingDir:             configOptions.HPCJobMappingDir,
 		HostPID:                      spec.IsHostPIDEnabled(),
-		HostNetwork:                  spec.IsHostNetworkEnabled(),
+		HostNetwork:                  configOptions.HostNetwork,
 		MetricsConfigName:            metricsConfigName,
+		MetricsConfigMountDirectory:  filepath.Dir(dcgmexporter.CustomMetricsFilePath),
+		HealthPort:                   dcgmexporter.HealthPort,
+		HealthPortName:               dcgmexporter.HealthPortName,
 		ServiceMonitorEnabled:        serviceMonitorEnabled,
 		PodResourcesDir:              filepath.Join(kubeletRootDir, "pod-resources"),
 		ServiceType:                  serviceType,
