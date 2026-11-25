@@ -129,7 +129,11 @@ func TestDCGMExporterSecurityContextRenderedInBothCRs(t *testing.T) {
 				if securityContext.yaml != "" {
 					values += "dcgmExporter:\n" + securityContext.yaml
 				}
-				cmd := exec.Command("helm", "template", "gpu-operator", ".", "--namespace", "gpu-operator", "--values", "-", "--show-only", crTemplate.template, "--api-versions", "resource.k8s.io/v1/DeviceClass")
+				cmd := exec.Command("helm", // #nosec G204 -- template paths are literals in the test table.
+					"template", "gpu-operator", ".", "--namespace", "gpu-operator",
+					"--values", "-", "--show-only", crTemplate.template,
+					"--api-versions", "resource.k8s.io/v1/DeviceClass",
+				)
 				cmd.Stdin = strings.NewReader(values)
 				var stderr strings.Builder
 				cmd.Stderr = &stderr
